@@ -92,6 +92,20 @@ describe('App component role-based access & directory UI', () => {
       expect(employeeApi.getEmployee).not.toHaveBeenCalled();
     });
 
+    it('renders "Audit Trail" button for ADMIN and opens AuditLogModal', async () => {
+      vi.mocked(employeeApi.getEmployees).mockResolvedValueOnce(mockEmployeesList);
+      const user = userEvent.setup();
+
+      renderWithAuth(<App />, { user: mockAdminUser });
+
+      const auditBtn = await screen.findByRole('button', { name: /audit trail/i });
+      expect(auditBtn).toBeInTheDocument();
+
+      await user.click(auditBtn);
+      expect(screen.getByRole('dialog', { name: /compliance audit trail/i })).toBeInTheDocument();
+    });
+
+
     it('opens DeleteModal and deletes an employee as ADMIN', async () => {
       vi.mocked(employeeApi.getEmployees).mockResolvedValue(mockEmployeesList);
       vi.mocked(employeeApi.deleteEmployee).mockResolvedValueOnce(undefined);
@@ -165,7 +179,11 @@ describe('App component role-based access & directory UI', () => {
       expect(
         screen.queryByRole('button', { name: new RegExp(`delete ${mockEmployee1.first_name}`, 'i') })
       ).not.toBeInTheDocument();
+
+      // Audit Trail button is strictly absent for Manager
+      expect(screen.queryByRole('button', { name: /audit trail/i })).not.toBeInTheDocument();
     });
+
 
     it('disables employment status checkbox in edit modal for MANAGER', async () => {
       vi.mocked(employeeApi.getEmployees).mockResolvedValueOnce([mockEmployee1]);

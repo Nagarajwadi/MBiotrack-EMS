@@ -8,6 +8,7 @@ import {
 } from './api/employeeApi';
 import {
   type BackendStatus,
+  AuditLogModal,
   DeleteModal,
   EmployeeModal,
   EmployeeProfileView,
@@ -25,9 +26,11 @@ import {
 import {
   canCreateEmployee,
   canDeactivateEmployee,
+  canViewAuditTrail,
   canViewDirectory,
   canViewOwnProfile,
 } from './utils/permissions';
+
 import './components/components.css';
 import './App.css';
 
@@ -88,7 +91,11 @@ function App() {
   const [deletingEmployee, setDeletingEmployee] = useState<Employee | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
+  // Compliance audit trail modal state (ADMIN only)
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
+
   // User feedback notification
+
   const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
 
   // Auto-dismiss feedback notification after 5 seconds
@@ -107,9 +114,11 @@ function App() {
         type: 'error',
         message: 'Your session has expired. Please sign in again.',
       });
+      setIsAuditModalOpen(false);
     }
     prevAuthRef.current = isAuthenticated;
   }, [isAuthenticated]);
+
 
   // Fetch employees list from API with strict sessionEpoch protection (for manual refresh)
   const fetchEmployees = useCallback(
@@ -423,7 +432,9 @@ function App() {
     try {
       await logout();
       setEmployees([]);
+      setIsAuditModalOpen(false);
       setFeedback({
+
         type: 'success',
         message: 'You have been signed out on this device.',
       });
@@ -528,16 +539,29 @@ function App() {
               <h2>Employee Directory</h2>
               <p>Manage employee records, organizational departments, and account statuses.</p>
             </div>
-            {canCreateEmployee(user?.role) && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleOpenCreateModal}
-              >
-                + Add Employee
-              </button>
-            )}
+            <div className="dashboard-actions-group">
+              {canViewAuditTrail(user?.role) && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-audit-trail"
+                  onClick={() => setIsAuditModalOpen(true)}
+                  title="View compliance and security audit trail"
+                >
+                  📋 Audit Trail
+                </button>
+              )}
+              {canCreateEmployee(user?.role) && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleOpenCreateModal}
+                >
+                  + Add Employee
+                </button>
+              )}
+            </div>
           </div>
+
 
           {/* Global Feedback Banner */}
           {feedback && (
@@ -688,8 +712,16 @@ function App() {
             onClose={handleCloseDeleteModal}
             onConfirm={handleConfirmDelete}
           />
+
+          {canViewAuditTrail(user?.role) && (
+            <AuditLogModal
+              isOpen={isAuditModalOpen}
+              onClose={() => setIsAuditModalOpen(false)}
+            />
+          )}
         </>
       )}
+
     </div>
   );
 }

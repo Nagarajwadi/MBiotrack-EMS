@@ -33,6 +33,14 @@ export function canDeactivateEmployee(role?: UserRole): boolean {
 }
 
 /**
+ * Evaluates whether the user's role permits viewing the security and compliance audit trail.
+ * Strictly permitted for ADMIN only. Prohibited for MANAGER and EMPLOYEE.
+ */
+export function canViewAuditTrail(role?: UserRole): boolean {
+  return role === 'ADMIN';
+}
+
+/**
  * Evaluates whether the user has a linked staff employee record allowing personal profile access.
  * Available for any authenticated user whose employee_id is non-null.
  */

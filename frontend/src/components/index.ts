@@ -5,4 +5,6 @@ export { DeleteModal, type DeleteModalProps } from './DeleteModal';
 export { LoginForm, type LoginFormProps } from './LoginForm';
 export { EmployeeProfileView, type EmployeeProfileViewProps } from './EmployeeProfileView';
 export { ProfileEditModal, type ProfileEditModalProps } from './ProfileEditModal';
+export { AuditLogModal, type AuditLogModalProps } from './AuditLogModal';
+
 

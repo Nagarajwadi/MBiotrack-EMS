@@ -3,9 +3,11 @@ import {
   canCreateEmployee,
   canDeactivateEmployee,
   canEditAnyEmployee,
+  canViewAuditTrail,
   canViewDirectory,
   canViewOwnProfile,
 } from './permissions';
+
 import {
   mockAdminUser,
   mockEmployeeUser,
@@ -89,6 +91,26 @@ describe('permissions utilities', () => {
       expect(canDeactivateEmployee(undefined)).toBe(false);
     });
   });
+
+  describe('canViewAuditTrail', () => {
+    it('allows ADMIN to view audit trail', () => {
+      expect(canViewAuditTrail('ADMIN')).toBe(true);
+    });
+
+    it('strictly forbids MANAGER from viewing audit trail', () => {
+      expect(canViewAuditTrail('MANAGER')).toBe(false);
+    });
+
+    it('strictly forbids EMPLOYEE from viewing audit trail', () => {
+      expect(canViewAuditTrail('EMPLOYEE')).toBe(false);
+    });
+
+    it('returns false for undefined or invalid role', () => {
+      expect(canViewAuditTrail(undefined)).toBe(false);
+      expect(canViewAuditTrail('GUEST' as unknown as UserRole)).toBe(false);
+    });
+  });
+
 
   describe('canViewOwnProfile', () => {
     it('returns true when user has a linked staff employee_id', () => {

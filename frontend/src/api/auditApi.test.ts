@@ -57,4 +57,3 @@ describe('auditApi client', () => {
     expect(url).toContain('actor_user_id=1');
   });
 });
-

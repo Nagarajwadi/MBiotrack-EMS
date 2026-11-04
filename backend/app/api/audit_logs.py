@@ -39,4 +39,3 @@ def get_audit_logs(
         target_type=target_type,
         actor_user_id=actor_user_id,
     )
-

@@ -518,4 +518,3 @@ def test_unsupported_methods_not_allowed(
 
     resp_delete = client.delete(endpoint, headers=headers)
     assert resp_delete.status_code == 405
-

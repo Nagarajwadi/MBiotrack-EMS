@@ -66,4 +66,3 @@ class AuditLogListResponse(BaseModel):
     total: int = Field(ge=0, description="Total count of records matching filters")
     limit: int = Field(ge=1, le=100, description="Applied page size limit")
     offset: int = Field(ge=0, description="Applied pagination offset")
-

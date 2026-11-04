@@ -24,4 +24,3 @@ export interface AuditLogFilterParams {
   target_type?: string;
   actor_user_id?: number;
 }
-

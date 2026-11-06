@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apiFetch, configureApiClient, type UnauthorizedCallback } from './client';
+import {
+  apiFetch,
+  apiFetchBlob,
+  configureApiClient,
+  getApiBaseUrl,
+  resolveApiUrl,
+  type UnauthorizedCallback,
+} from './client';
 import { ApiError } from './apiError';
 
 describe('API client (client.ts)', () => {
@@ -262,6 +269,125 @@ describe('API client (client.ts)', () => {
       mockFetch.mockRejectedValueOnce(abortError);
 
       await expect(apiFetch('/api/v1/aborted')).rejects.toThrow('The operation was aborted');
+    });
+  });
+
+  describe('API base URL resolution (VITE_API_BASE_URL)', () => {
+    it('returns empty string and preserves relative endpoint when VITE_API_BASE_URL is unset', async () => {
+      vi.unstubAllEnvs();
+      expect(getApiBaseUrl()).toBe('');
+      expect(resolveApiUrl('/api/v1/employees')).toBe('/api/v1/employees');
+      expect(resolveApiUrl('/health')).toBe('/health');
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      );
+      await apiFetch('/api/v1/employees');
+      expect(mockFetch).toHaveBeenCalledWith('/api/v1/employees', expect.anything());
+    });
+
+    it('returns empty string when VITE_API_BASE_URL is empty or whitespace', () => {
+      vi.stubEnv('VITE_API_BASE_URL', '   ');
+      expect(getApiBaseUrl()).toBe('');
+      expect(resolveApiUrl('/api/v1/attendance')).toBe('/api/v1/attendance');
+    });
+
+    it('resolves relative endpoint against configured base URL', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com');
+      expect(getApiBaseUrl()).toBe('https://mbiotrack-backend-demo.onrender.com');
+      expect(resolveApiUrl('/api/v1/employees')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/employees'
+      );
+      expect(resolveApiUrl('/health')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/health'
+      );
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      );
+      await apiFetch('/api/v1/employees');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/employees',
+        expect.anything()
+      );
+    });
+
+    it('trims trailing slashes from configured base URL', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com///');
+      expect(getApiBaseUrl()).toBe('https://mbiotrack-backend-demo.onrender.com');
+      expect(resolveApiUrl('/api/v1/employees')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/employees'
+      );
+    });
+
+    it('avoids duplicating /api/v1 when base URL already contains /api/v1', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com/api/v1');
+      expect(resolveApiUrl('/api/v1/employees')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/employees'
+      );
+      expect(resolveApiUrl('/api/v1/auth/login')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/auth/login'
+      );
+      // Trailing slash with /api/v1/
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com/api/v1/');
+      expect(resolveApiUrl('/api/v1/leaves')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/leaves'
+      );
+    });
+
+    it('preserves query strings and parameters when resolving base URL', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com');
+      expect(resolveApiUrl('/api/v1/attendance?date=2026-11-06&limit=50')).toBe(
+        'https://mbiotrack-backend-demo.onrender.com/api/v1/attendance?date=2026-11-06&limit=50'
+      );
+    });
+
+    it('leaves already absolute URLs untouched', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com');
+      expect(resolveApiUrl('https://other-service.com/api/v1/test')).toBe(
+        'https://other-service.com/api/v1/test'
+      );
+      expect(resolveApiUrl('http://localhost:8000/health')).toBe(
+        'http://localhost:8000/health'
+      );
+    });
+
+    it('preserves Authorization headers and handles 401 when using configured base URL', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com');
+      currentToken = 'active-jwt-token-456';
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Token has expired.' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+      );
+
+      await expect(apiFetch('/api/v1/employees')).rejects.toThrow(ApiError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://mbiotrack-backend-demo.onrender.com/api/v1/employees');
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer active-jwt-token-456');
+      expect(mockOnUnauthorized).toHaveBeenCalledTimes(1);
+    });
+
+    it('apiFetchBlob uses configured base URL and returns Blob', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://mbiotrack-backend-demo.onrender.com');
+      const csvData = 'Employee Code,Name\nEMP001,Alice';
+      const mockBlob = new Blob([csvData], { type: 'text/csv' });
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(mockBlob, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="attendance_report.csv"',
+          },
+        })
+      );
+
+      const resultBlob = await apiFetchBlob('/api/v1/attendance/report/export-csv');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://mbiotrack-backend-demo.onrender.com/api/v1/attendance/report/export-csv');
+      expect(resultBlob).toBeInstanceOf(Blob);
     });
   });
 });

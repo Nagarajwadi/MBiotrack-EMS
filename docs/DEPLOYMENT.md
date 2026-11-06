@@ -70,7 +70,7 @@ The backend application resolves its settings via `pydantic-settings` from envir
 | `PROJECT_NAME` | `MBiotrack-EMS` | Application identifier |
 | `HOST` | `127.0.0.1` | Bind strictly to loopback interface behind the reverse proxy |
 | `PORT` | `8000` | Local port for FastAPI Uvicorn workers |
-| `CORS_ORIGINS` | `["https://mbiotrack.yourdomain.com"]` | JSON array containing only authorized production domains (no wildcards) |
+| `CORS_ORIGINS` | `["https://mbiotrack.yourdomain.com"]` | JSON array containing only authorized production domains (no wildcards allowed; enter actual deployed frontend origin) |
 | `DATABASE_URL` | `postgresql+psycopg://user:pass@db-host:5432/mbiotrack_prod?sslmode=require` | Connection string targeting the production database with TLS enforced |
 | `SECRET_KEY` | High-entropy random string (64+ chars) | Cryptographic key for HS256 JWT access tokens. Must be generated randomly |
 | `ALGORITHM` | `HS256` | Cryptographic algorithm; hard-coded to `HS256` |
@@ -187,17 +187,36 @@ server {
 
 ## E. Frontend Production Deployment
 
-In development, Vite proxies API calls directly. In production, Vite is not used as a server; the frontend is compiled into optimized static HTML, CSS, and JavaScript.
+In development, Vite proxies API calls directly to the local backend. In production, Vite is not used as a server; the frontend is compiled into optimized static HTML, CSS, and JavaScript.
 
-### 1. Build Static Assets
+### 1. API Base URL Configuration (`VITE_API_BASE_URL`)
+
+- **Local Development:**
+  Leave `VITE_API_BASE_URL` empty or unset in `frontend/.env`. When unset, the application uses relative paths (`/api/v1/...`) and routes requests through Vite's local development proxy (`http://127.0.0.1:8000`).
+- **Cloud / Managed Hosting (e.g. Render Static Site):**
+  When the frontend and backend are hosted on separate domains or subdomains, configure the backend URL in the frontend build environment:
+  ```text
+  VITE_API_BASE_URL=https://<your-backend-service>.onrender.com
+  ```
+  - The client automatically trims trailing slashes and avoids duplicate `/api/v1` path segments.
+  - **Rebuild Requirement:** Because Vite inlines all `VITE_` variables into the JavaScript bundle at build time, any modification to `VITE_API_BASE_URL` requires triggering a **rebuild and redeployment** of the frontend static site to take effect.
+  - **Security Mandate:** Never place secrets, private keys, database passwords, or JWT secrets in frontend environment variables. All `VITE_` variables are public and exposed in client-side bundle assets.
+- **Backend CORS Alignment:**
+  In the backend Web Service environment settings, set `CORS_ORIGINS` to allow the deployed frontend origin:
+  ```text
+  CORS_ORIGINS=["https://<your-frontend-subdomain>.onrender.com"]
+  ```
+  Do not use wildcard `*` origins; wildcards are strictly rejected when credentials (`allow_credentials=True`) are enabled. The operator must enter the actual deployed frontend origin provided by the hosting platform after provisioning.
+
+### 2. Build Static Assets
 From the repository root:
 ```bash
 npm.cmd --prefix frontend run build
 ```
 This produces the distribution directory: `frontend/dist/`.
 
-### 2. Verify Output Bundle
-Ensure the output directory contains `index.html` and versioned assets in `assets/`. Transfer the contents of `frontend/dist/` to your web server document root (e.g., `/var/www/mbiotrack/frontend/dist`).
+### 3. Verify Output Bundle
+Ensure the output directory contains `index.html` and versioned assets in `assets/`. Transfer the contents of `frontend/dist/` to your web server document root (e.g., `/var/www/mbiotrack/frontend/dist`) or publish directory (`dist` on Render Static Site).
 
 ---
 

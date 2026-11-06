@@ -208,3 +208,47 @@ def test_decode_rejects_non_hs256_token():
         decode_access_token(hs384_token)
 
 
+def test_cors_origins_validation():
+    # 1. Default development origins
+    default_settings = Settings()
+    assert default_settings.CORS_ORIGINS == [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+    # 2. Parsing from JSON list string
+    json_settings = Settings(
+        CORS_ORIGINS='["https://mbiotrack-frontend-demo.onrender.com"]'
+    )
+    assert json_settings.CORS_ORIGINS == [
+        "https://mbiotrack-frontend-demo.onrender.com"
+    ]
+
+    # 3. Parsing from comma-separated string
+    csv_settings = Settings(
+        CORS_ORIGINS="https://mbiotrack-frontend-demo.onrender.com, http://localhost:5173"
+    )
+    assert csv_settings.CORS_ORIGINS == [
+        "https://mbiotrack-frontend-demo.onrender.com",
+        "http://localhost:5173",
+    ]
+
+    # 4. Normalizing trailing slashes
+    slash_settings = Settings(
+        CORS_ORIGINS='["https://mbiotrack-frontend-demo.onrender.com/"]'
+    )
+    assert slash_settings.CORS_ORIGINS == [
+        "https://mbiotrack-frontend-demo.onrender.com"
+    ]
+
+    # 5. Strictly rejecting wildcard origin
+    with pytest.raises(ValueError, match="Wildcard '\\*' origin is not permitted"):
+        Settings(CORS_ORIGINS='["*"]')
+
+    with pytest.raises(ValueError, match="Wildcard '\\*' origin is not permitted"):
+        Settings(CORS_ORIGINS="*")
+
+    with pytest.raises(ValueError, match="Wildcard '\\*' origin is not permitted"):
+        Settings(CORS_ORIGINS=["https://valid.com", "*"])
+
+

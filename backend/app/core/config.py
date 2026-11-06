@@ -73,8 +73,43 @@ class Settings(BaseSettings):
             return v.strip().lower() in ("true", "1", "yes", "on", "debug", "dev", "development")
         return bool(v)
 
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            v_trimmed = v.strip()
+            if not v_trimmed:
+                return []
+            if v_trimmed.startswith("[") and v_trimmed.endswith("]"):
+                try:
+                    import json
+                    parsed = json.loads(v_trimmed)
+                    if isinstance(parsed, list):
+                        v = parsed
+                except Exception:
+                    pass
+            if isinstance(v, str):
+                v = [item.strip() for item in v_trimmed.split(",") if item.strip()]
+
+        if isinstance(v, (list, tuple, set)):
+            cleaned_origins: list[str] = []
+            for item in v:
+                if not isinstance(item, str):
+                    continue
+                origin = item.strip().rstrip("/")
+                if not origin:
+                    continue
+                if origin == "*":
+                    raise ValueError(
+                        "Wildcard '*' origin is not permitted in CORS_ORIGINS when credentials are enabled."
+                    )
+                cleaned_origins.append(origin)
+            return cleaned_origins
+
+        return list(v) if v is not None else []
+
     # Explicit list of origins permitted to make cross-origin requests
-    CORS_ORIGINS: list[str] = [
+    CORS_ORIGINS: list[str] | str = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]

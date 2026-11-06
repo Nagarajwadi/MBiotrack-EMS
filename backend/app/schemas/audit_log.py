@@ -49,11 +49,16 @@ class AuditLogResponse(BaseModel):
     action: str
     target_type: str
     target_id: str | None = None
+    entity_name: str | None = None
+    entity_id: str | None = None
+    before_state: dict[str, Any] | None = None
+    after_state: dict[str, Any] | None = None
+    db_session_user: str | None = None
     metadata: dict[str, Any] | None = None
     ip_address: str | None = None
     created_at: datetime
 
-    @field_validator("metadata", mode="before")
+    @field_validator("metadata", "before_state", "after_state", mode="before")
     @classmethod
     def scrub_metadata(cls, v: Any) -> dict[str, Any] | None:
         return sanitize_audit_metadata(v)

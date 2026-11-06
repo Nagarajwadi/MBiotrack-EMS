@@ -1,9 +1,26 @@
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, inspect, select
+from sqlalchemy.orm import Session, undefer
 
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.audit_log import AuditLogListResponse, AuditLogResponse
+
+_evolved_audit_support: dict[str, bool] = {}
+
+
+def _db_supports_evolved_audit(db: Session) -> bool:
+    """Inspect whether the active database session supports evolved audit columns (Slice 3+)."""
+    try:
+        bind = db.get_bind()
+        engine = getattr(bind, "engine", bind)
+        url_key = str(getattr(engine, "url", ""))
+        if url_key not in _evolved_audit_support:
+            insp = inspect(bind)
+            cols = {c["name"] for c in insp.get_columns("audit_logs")}
+            _evolved_audit_support[url_key] = "before_state" in cols
+        return _evolved_audit_support[url_key]
+    except Exception:
+        return False
 
 
 class AuditService:
@@ -27,11 +44,20 @@ class AuditService:
         safe_limit = max(1, min(limit, 100))
         safe_offset = max(0, offset)
 
+        has_evolved = _db_supports_evolved_audit(db)
+
         # Base query joining AuditLog with User
         base_query = (
             select(AuditLog, User.email.label("actor_email"))
             .outerjoin(User, AuditLog.actor_user_id == User.id)
         )
+        if has_evolved:
+            base_query = base_query.options(
+                undefer(AuditLog.before_state),
+                undefer(AuditLog.after_state),
+                undefer(AuditLog.db_session_user),
+            )
+
         count_query = select(func.count(AuditLog.id))
 
         # Apply filters uniformly to both data and count queries
@@ -70,6 +96,11 @@ class AuditService:
                 action=log.action,
                 target_type=log.target_type,
                 target_id=log.target_id,
+                entity_name=log.entity_name,
+                entity_id=log.entity_id,
+                before_state=log.before_state if has_evolved else None,
+                after_state=log.after_state if has_evolved else None,
+                db_session_user=log.db_session_user if has_evolved else None,
                 metadata=log.metadata_,
                 ip_address=log.ip_address,
                 created_at=log.created_at,

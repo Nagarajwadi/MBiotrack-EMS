@@ -1,9 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.assignments import router as assignments_router
+from app.api.attendance import router as attendance_router
 from app.api.audit_logs import router as audit_logs_router
 from app.api.auth import router as auth_router
+from app.api.devices import router as devices_router
 from app.api.employees import router as employees_router
+from app.api.holidays import router as holidays_router
+from app.api.leaves import router as leaves_router
+from app.api.offices import router as offices_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -25,6 +31,12 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(employees_router)
 app.include_router(audit_logs_router)
+app.include_router(assignments_router)
+app.include_router(offices_router)
+app.include_router(devices_router)
+app.include_router(attendance_router)
+app.include_router(leaves_router)
+app.include_router(holidays_router)
 
 
 @app.get("/health", tags=["Health"])

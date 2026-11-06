@@ -1097,3 +1097,516 @@
   align-items: center;
   gap: 0.35rem;
 }
+
+/* ==========================================================================
+   Attendance View & Roaming Indicators (Slice 5 / GOV-08)
+   ========================================================================== */
+
+.attendance-view-wrapper {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+
+.attendance-filter-card {
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+  background-color: var(--surface-color, #ffffff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: var(--radius-md, 8px);
+}
+
+.attendance-filter-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.attendance-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.875rem;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.filter-input {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  border: 1px solid var(--border-color, #cbd5e1);
+  border-radius: var(--radius-sm, 6px);
+  background-color: var(--surface-color, #ffffff);
+  color: var(--text-color, #1e293b);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.filter-input:focus {
+  border-color: var(--primary-color, #2563eb);
+}
+
+.attendance-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.roaming-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge-roaming {
+  background-color: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.badge-assigned {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.attendance-table th {
+  background-color: #f8fafc;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+}
+
+.attendance-table td {
+  vertical-align: middle;
+  padding: 0.75rem 1rem;
+}
+
+.attendance-cell-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+}
+
+.attendance-cell-employee {
+  min-width: 160px;
+}
+
+.attendance-cell-roaming {
+  white-space: nowrap;
+}
+
+.attendance-pagination-footer {
+  padding: 0.875rem 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+
+.btn-attendance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.employee-subnav {
+  display: inline-flex;
+  background-color: #f1f5f9;
+  padding: 0.25rem;
+  border-radius: var(--radius-md, 8px);
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+}
+
+/* ==========================================================================
+   Management Administration View (Slice 6: Offices, Devices, Assignments)
+   ========================================================================== */
+
+.management-view-wrapper {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+
+.management-subnav {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  padding-bottom: 0.5rem;
+  overflow-x: auto;
+}
+
+.management-subnav .nav-tab-btn {
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-muted, #64748b);
+  border: 1px solid transparent;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.management-subnav .nav-tab-btn:hover {
+  background-color: #f1f5f9;
+  color: var(--text-color, #1e293b);
+}
+
+.management-subnav .nav-tab-btn.active {
+  background-color: var(--primary-color, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.management-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.25rem;
+}
+
+.badge-inactive {
+  background-color: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+}
+
+.badge-primary-scope {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  font-weight: 700;
+}
+
+.office-modal-container,
+.device-modal-container,
+.assignment-modal-container {
+  max-width: 580px;
+  width: 90%;
+}
+
+.btn-management {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* ==========================================================================
+   Daily Attendance Operations & Summary (Slice 7)
+   ========================================================================== */
+
+.attendance-tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  padding-bottom: 0.5rem;
+  overflow-x: auto;
+}
+
+.attendance-tab-bar .nav-tab-btn {
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-muted, #64748b);
+  border: 1px solid transparent;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.attendance-tab-bar .nav-tab-btn:hover {
+  background-color: #f1f5f9;
+  color: var(--text-color, #1e293b);
+}
+
+.attendance-tab-bar .nav-tab-btn.active {
+  background-color: var(--primary-color, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.attendance-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.attendance-summary-card {
+  background-color: var(--surface-color, #ffffff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: var(--radius-md, 8px);
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.attendance-summary-card:hover {
+  box-shadow: 0 3px 6px -1px rgba(0, 0, 0, 0.08);
+}
+
+.attendance-summary-card.highlight-warning {
+  border-color: #f59e0b;
+  background-color: #fffbeb;
+}
+
+.attendance-summary-card.highlight-roaming {
+  border-color: #d97706;
+  background-color: #fef3c7;
+}
+
+.attendance-summary-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  background-color: #f1f5f9;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.attendance-summary-icon.events {
+  background-color: #eff6ff;
+  color: #1d4ed8;
+}
+
+.attendance-summary-icon.punches {
+  background-color: #ecfdf5;
+  color: #047857;
+}
+
+.attendance-summary-icon.nopunch {
+  background-color: #f8fafc;
+  color: #64748b;
+}
+
+.attendance-summary-icon.review {
+  background-color: #fef3c7;
+  color: #b45309;
+}
+
+.attendance-summary-icon.roaming {
+  background-color: #fff1f2;
+  color: #be123c;
+}
+
+.attendance-summary-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.attendance-summary-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-color, #1e293b);
+  line-height: 1.2;
+}
+
+.attendance-summary-label {
+  font-size: 0.75rem;
+  color: var(--text-muted, #64748b);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  margin-top: 0.15rem;
+}
+
+.badge-neutral {
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.badge-warning {
+  background-color: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.badge-success {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.inspect-punches-modal-container {
+  max-width: 640px;
+  width: 90%;
+}
+
+.roaming-alert-box {
+  background-color: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.8125rem;
+  color: #92400e;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/* --------------------------------------------------------------------------
+   Slice 9: Leave & Holiday Badges and Controls
+   -------------------------------------------------------------------------- */
+.badge-leave-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.badge-type-annual {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.badge-type-sick {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge-type-casual {
+  background-color: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.badge-type-unpaid {
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.badge-leave-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.badge-status-pending {
+  background-color: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.badge-status-approved {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.badge-status-rejected {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.badge-status-cancelled {
+  background-color: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+}
+
+.badge-holiday-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge-scope-org {
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.badge-scope-office {
+  background-color: #ede9fe;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.badge-holiday-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge-type-official {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.badge-type-optional {
+  background-color: #fffbeb;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.btn-success {
+  background-color: #10b981;
+  color: #ffffff;
+}
+.btn-success:hover:not(:disabled) {
+  background-color: #059669;
+}

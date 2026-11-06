@@ -1,4 +1,4 @@
-export { Header, type HeaderProps, type BackendStatus } from './Header';
+export { Header, type HeaderProps, type BackendStatus, type ActiveView } from './Header';
 export { EmployeeTable, type EmployeeTableProps } from './EmployeeTable';
 export { EmployeeModal, type EmployeeModalProps } from './EmployeeModal';
 export { DeleteModal, type DeleteModalProps } from './DeleteModal';
@@ -6,3 +6,11 @@ export { LoginForm, type LoginFormProps } from './LoginForm';
 export { EmployeeProfileView, type EmployeeProfileViewProps } from './EmployeeProfileView';
 export { ProfileEditModal, type ProfileEditModalProps } from './ProfileEditModal';
 export { AuditLogModal, type AuditLogModalProps } from './AuditLogModal';
+export { AttendanceView, type AttendanceViewProps } from './AttendanceView';
+export { ManagementView, type ManagementViewProps } from './ManagementView';
+export { OfficeModal, type OfficeModalProps } from './OfficeModal';
+export { DeviceModal, type DeviceModalProps } from './DeviceModal';
+export { AssignmentModal, type AssignmentModalProps } from './AssignmentModal';
+export { LeaveModal, type LeaveModalProps } from './LeaveModal';
+export { HolidayModal, type HolidayModalProps } from './HolidayModal';
+export { LeaveAndHolidayView, type LeaveAndHolidayViewProps } from './LeaveAndHolidayView';

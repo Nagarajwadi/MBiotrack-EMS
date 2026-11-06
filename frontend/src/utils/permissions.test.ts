@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canCreateAssignment,
   canCreateEmployee,
   canDeactivateEmployee,
+  canDeleteAssignment,
   canEditAnyEmployee,
+  canManageDevices,
+  canManageOffices,
   canViewAuditTrail,
   canViewDirectory,
+  canViewManagement,
   canViewOwnProfile,
 } from './permissions';
 
@@ -128,5 +133,36 @@ describe('permissions utilities', () => {
       expect(canViewOwnProfile(null)).toBe(false);
     });
   });
-});
 
+  describe('Management permissions', () => {
+    it('canManageOffices permits only ADMIN', () => {
+      expect(canManageOffices('ADMIN')).toBe(true);
+      expect(canManageOffices('MANAGER')).toBe(false);
+      expect(canManageOffices('EMPLOYEE')).toBe(false);
+    });
+
+    it('canManageDevices permits only ADMIN', () => {
+      expect(canManageDevices('ADMIN')).toBe(true);
+      expect(canManageDevices('MANAGER')).toBe(false);
+      expect(canManageDevices('EMPLOYEE')).toBe(false);
+    });
+
+    it('canCreateAssignment permits ADMIN and MANAGER', () => {
+      expect(canCreateAssignment('ADMIN')).toBe(true);
+      expect(canCreateAssignment('MANAGER')).toBe(true);
+      expect(canCreateAssignment('EMPLOYEE')).toBe(false);
+    });
+
+    it('canDeleteAssignment permits only ADMIN', () => {
+      expect(canDeleteAssignment('ADMIN')).toBe(true);
+      expect(canDeleteAssignment('MANAGER')).toBe(false);
+      expect(canDeleteAssignment('EMPLOYEE')).toBe(false);
+    });
+
+    it('canViewManagement permits ADMIN and MANAGER', () => {
+      expect(canViewManagement('ADMIN')).toBe(true);
+      expect(canViewManagement('MANAGER')).toBe(true);
+      expect(canViewManagement('EMPLOYEE')).toBe(false);
+    });
+  });
+});

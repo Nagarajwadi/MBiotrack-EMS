@@ -587,3 +587,151 @@ def test_no_secret_or_credential_leakage_in_output(monkeypatch):
     assert db_url not in combined_output
     # Argon2id prefix or hash fragments must never appear
     assert "$argon2id$" not in combined_output
+
+
+# ===========================================================================
+# Production Bootstrap Flag & Environment Tests (Mocked / Pure Unit)
+# ===========================================================================
+
+def test_validate_target_production_accepts_remote_host_and_custom_dbname():
+    """Under production mode, remote PostgreSQL host and production database name are accepted."""
+    prod_url = "postgresql+psycopg://postgres:secret123@db.prod.internal-corp.net:5432/mbiotrack_prod"
+    db_name, host = validate_target_database(prod_url, is_production=True)
+    assert db_name == "mbiotrack_prod"
+    assert host == "db.prod.internal-corp.net"
+
+
+def test_validate_target_production_unconditionally_rejects_test_database_mixed_case():
+    """Under production mode, test database names with any case (e.g. *_test, *_TEST) are rejected."""
+    urls = [
+        "postgresql+psycopg://user:pass@remote.host:5432/mbiotrack_test",
+        "postgresql+psycopg://user:pass@remote.host:5432/mbiotrack_TEST",
+        "postgresql+psycopg://user:pass@remote.host:5432/custom_database_TeSt",
+    ]
+    for url in urls:
+        with pytest.raises(BootstrapSecurityError) as exc:
+            validate_target_database(url, is_production=True)
+        assert "Refusing to run administrator bootstrap against test database" in str(exc.value)
+
+
+def test_run_cli_production_flag_mismatch_in_development(monkeypatch):
+    """Running with --production while ENVIRONMENT is development must be rejected."""
+    monkeypatch.setattr("app.cli.create_admin.get_settings", lambda: MagicMock(ENVIRONMENT="development"))
+    stderr_capture = io.StringIO()
+    with patch("sys.stderr", stderr_capture):
+        code = run_cli(args=["--production"])
+    assert code == 1
+    assert "--production flag can only be used when ENVIRONMENT is configured as 'production'" in stderr_capture.getvalue()
+
+
+def test_run_cli_production_environment_without_flag_fails(monkeypatch):
+    """Running in production environment without explicit --production flag must be rejected."""
+    monkeypatch.setattr("app.cli.create_admin.get_settings", lambda: MagicMock(ENVIRONMENT="production"))
+    stderr_capture = io.StringIO()
+    with patch("sys.stderr", stderr_capture):
+        code = run_cli(args=[])
+    assert code == 1
+    assert "Running in production environment requires the explicit '--production' flag" in stderr_capture.getvalue()
+
+
+def test_run_cli_production_confirmation_mismatch_aborts(monkeypatch):
+    """Incorrect confirmation string aborts before credential entry is prompted."""
+    mock_settings = MagicMock(
+        ENVIRONMENT="production",
+        DATABASE_URL="postgresql+psycopg://user:pass@remote.host:5432/mbiotrack_prod",
+    )
+    monkeypatch.setattr("app.cli.create_admin.get_settings", lambda: mock_settings)
+
+    mock_session = MagicMock()
+    mock_session.scalar.return_value = 0  # preflight user count: 0
+    mock_session_factory = MagicMock(return_value=mock_session)
+    mock_session.__enter__.return_value = mock_session
+
+    # Operator inputs invalid confirmation string
+    monkeypatch.setattr("builtins.input", lambda prompt: "no")
+
+    credential_mock = MagicMock()
+    monkeypatch.setattr("app.cli.create_admin.prompt_credentials", credential_mock)
+
+    stderr_capture = io.StringIO()
+    with patch("sys.stderr", stderr_capture):
+        code = run_cli(args=["--production"], session_factory=mock_session_factory)
+
+    assert code == 1
+    assert "Confirmation string mismatch. Aborting bootstrap." in stderr_capture.getvalue()
+    # Credentials must NEVER be prompted if confirmation failed
+    assert credential_mock.call_count == 0
+
+
+def test_run_cli_production_confirmation_eof_aborts(monkeypatch):
+    """Non-interactive or closed stdin during confirmation prompt cleanly aborts."""
+    mock_settings = MagicMock(
+        ENVIRONMENT="production",
+        DATABASE_URL="postgresql+psycopg://user:pass@remote.host:5432/mbiotrack_prod",
+    )
+    monkeypatch.setattr("app.cli.create_admin.get_settings", lambda: mock_settings)
+
+    mock_session = MagicMock()
+    mock_session.scalar.return_value = 0
+    mock_session_factory = MagicMock(return_value=mock_session)
+    mock_session.__enter__.return_value = mock_session
+
+    def raise_eof(prompt):
+        raise EOFError("No interactive TTY")
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    stderr_capture = io.StringIO()
+    with patch("sys.stderr", stderr_capture):
+        code = run_cli(args=["--production"], session_factory=mock_session_factory)
+
+    assert code == 1
+    assert "Interactive input unavailable or cancelled" in stderr_capture.getvalue()
+
+
+def test_run_cli_production_successful_bootstrap_with_mock_session(monkeypatch):
+    """Full production bootstrap succeeds under mock session without exposing secrets."""
+    mock_settings = MagicMock(
+        ENVIRONMENT="production",
+        DATABASE_URL="postgresql+psycopg://user:pass@remote.host:5432/mbiotrack_prod",
+    )
+    monkeypatch.setattr("app.cli.create_admin.get_settings", lambda: mock_settings)
+
+    mock_session = MagicMock()
+    mock_session.scalar.side_effect = [
+        0,     # preflight check count
+        True,  # advisory lock acquired
+        0,     # lock re-check count
+    ]
+    mock_session_factory = MagicMock(return_value=mock_session)
+    mock_session.__enter__.return_value = mock_session
+
+    inputs = iter(["CONFIRM PRODUCTION BOOTSTRAP", "Production Admin", "prod_admin@mbiotrack.com"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    secret_pw = "ProductionSuperPassword123!"
+    passwords = iter([secret_pw, secret_pw])
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(passwords))
+
+    fake_admin = MagicMock(
+        id=42,
+        full_name="Production Admin",
+        email="prod_admin@mbiotrack.com",
+        role="ADMIN",
+        is_active=True,
+    )
+    monkeypatch.setattr("app.cli.create_admin.execute_bootstrap", lambda **kwargs: fake_admin)
+
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+
+    with patch("sys.stdout", stdout_capture), patch("sys.stderr", stderr_capture):
+        code = run_cli(args=["--production"], session_factory=mock_session_factory)
+
+    assert code == 0
+    combined = stdout_capture.getvalue() + stderr_capture.getvalue()
+    assert "Initial administrator created successfully" in combined
+    assert "User ID:   42" in combined
+    assert "Email:     prod_admin@mbiotrack.com" in combined
+    # Password must never appear in output
+    assert secret_pw not in combined

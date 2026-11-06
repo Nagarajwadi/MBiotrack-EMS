@@ -49,11 +49,11 @@ In production, MBiotrack-EMS operates behind an external HTTPS reverse proxy tha
 | Component | Repository Status | Operational Responsibility |
 |---|---|---|
 | **FastAPI Backend Application** | Implemented & verified | Python runtime & environment configuration |
-| **Database Migrations (Alembic)** | Implemented (`0001` & `0002`) | Execute `alembic upgrade head` on production DB |
+| **Database Migrations (Alembic)** | Implemented (`0001` through `0007`) | Execute `alembic upgrade head` on production DB |
 | **React Single-Page Application** | Implemented & verified | Compile via `npm run build` and serve `dist/` |
 | **Reverse Proxy (Nginx / Caddy)** | Not yet provisioned | Provision host, configure TLS and routing rules |
 | **PostgreSQL Database Server** | Local dev verified | Provision production database with TLS and automated backups |
-| **Biometric Attendance Hardware** | Future milestone | Device model selection, SDK integration, and event ingestion |
+| **Biometric Attendance Hardware** | Future milestone | Device vendor selection, physical hardware drivers, and template matching |
 
 ---
 
@@ -230,9 +230,14 @@ $$\text{Workers} = (2 \times \text{CPU cores}) + 1$$
 Ensure connection pool settings in `backend/app/core/config.py` (`DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=10`) align with your database maximum connection limit ($(\text{Pool Size} + \text{Overflow}) \times \text{Workers} \le \text{PostgreSQL max\_connections}$).
 
 ### 3. Health Monitoring
-Automated monitoring systems should regularly probe the lightweight health check:
-- Endpoint: `GET /health`
-- Expected response: `{"status": "ok", "application": "MBiotrack-EMS"}` (HTTP 200)
+Automated monitoring and container orchestration systems should differentiate between process liveness and database readiness:
+- **Liveness Probe:** `GET /health`
+  - Lightweight process check confirming the ASGI worker is responsive.
+  - Expected response: `{"status": "ok", "application": "MBiotrack-EMS"}` (HTTP 200).
+- **Readiness Probe:** `GET /health/ready`
+  - Connectivity check executing `SELECT 1` against the configured PostgreSQL database.
+  - Expected response: `{"status": "ready", "database": "connected"}` (HTTP 200).
+  - Returns HTTP 503 (`Database connectivity unavailable.`) if the database is unreachable or pool is exhausted, preventing traffic dispatch until recovery.
 
 ---
 
@@ -245,7 +250,7 @@ Before directing live user traffic to MBiotrack-EMS, verify each checklist item:
 - [ ] **CORS Allowlist:** `CORS_ORIGINS` contains only the verified production frontend URL.
 - [ ] **Database Network Isolation:** PostgreSQL is not accessible from the public internet. Connections require valid TLS (`sslmode=require`).
 - [ ] **Database Migrations:** Schema is up to date (`alembic upgrade head`).
-- [ ] **Initial Administrator Creation:** Bootstrap CLI (`create_admin.py`) was executed over local shell to initialize day-0 administrator credentials.
+- [ ] **Initial Administrator Creation:** Bootstrap CLI was executed interactively over secure shell using `python -m app.cli.create_admin --production` with operator confirmation to initialize day-0 administrator credentials on the empty user table.
 - [ ] **Trusted Proxy Integrity:** `TRUST_PROXY_HEADERS=true` with `TRUSTED_PROXIES` restricted to the exact IP/CIDR of the reverse proxy.
 - [ ] **HTTPS Enforcement:** All HTTP traffic redirects to HTTPS with HSTS enabled.
 - [ ] **Audit Log Verification:** Database table `audit_logs` correctly records login successes, failures, and employee modifications.
@@ -253,10 +258,23 @@ Before directing live user traffic to MBiotrack-EMS, verify each checklist item:
 
 ---
 
-## H. Biometric Feature Separation Notice
+## H. Product Scope & Roadmap Notice
 
-Biometric attendance devices (fingerprint scanners, facial recognition terminals) require physical device procurement, firmware validation, and protocol specification. 
+MBiotrack-EMS Version 1 is a device-neutral workforce and attendance operations platform.
 
-**Current Architecture:**
-The current release provides all administrative, authorization, and employee directory foundations necessary to support attendance tracking. The biometric ingestion pipelines, attendance reconciliation engines, and hardware SDK integration will be developed in a subsequent dedicated milestone.
+**Implemented in Version 1:**
+- Slices 1–9 are fully implemented and verified:
+  - Office domain and employee assignments.
+  - Biometric device registry and status lifecycle.
+  - Append-only audit trail with structured telemetry metadata.
+  - Normalized attendance ingestion (`POST /api/v1/attendance/punch`) and roaming detection.
+  - Employee and manager attendance history interfaces.
+  - Administration UI for offices, devices, and employee office assignments.
+  - Daily Attendance Operations view with punch inspection.
+  - Attendance date-range reporting and CSV export with formula injection protection.
+  - Leave management with row-locking concurrency protection and holiday calendar.
+
+**Deferred to Future Milestones:**
+- Physical biometric hardware integration (vendor-specific SDKs, fingerprint/facial recognition drivers, and proprietary communication protocols).
+- Biometric template enrollment and edge matching.
 

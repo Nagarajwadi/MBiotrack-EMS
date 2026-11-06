@@ -14,7 +14,7 @@ settings = get_settings()
 
 
 def get_client_ip(request: Request) -> str:
-    """Safely resolve client IP with strict right-to-left trusted proxy validation."""
+    """Safely resolve client IP with strict edge trust and right-to-left proxy validation."""
     if not request.client or not request.client.host:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -34,6 +34,26 @@ def get_client_ip(request: Request) -> str:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid client network address.",
             )
+
+    # Edge-provided single-IP header (e.g. Cloudflare CF-Connecting-IP on Render)
+    # Preferred single-IP source ONLY when edge-trust configuration is explicitly active.
+    if settings.TRUST_EDGE_CLIENT_IP:
+        cf_ip_raw = request.headers.get("CF-Connecting-IP")
+        if cf_ip_raw is not None:
+            cleaned_cf_ip = cf_ip_raw.strip()
+            if not cleaned_cf_ip or "," in cleaned_cf_ip:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Malformed CF-Connecting-IP header.",
+                )
+            try:
+                cf_ip_obj = ipaddress.ip_address(cleaned_cf_ip)
+                return str(cf_ip_obj)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Malformed CF-Connecting-IP header.",
+                )
 
     # If proxy trust is disabled or trusted proxy list is empty, return direct peer IP
     if not settings.TRUST_PROXY_HEADERS or not settings.TRUSTED_PROXIES:

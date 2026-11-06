@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # Reverse Proxy & Client IP Trust (Disabled by default)
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXIES: list[str] = []
+    TRUST_EDGE_CLIENT_IP: bool = False
 
     @field_validator("ALGORITHM", mode="before")
     @classmethod

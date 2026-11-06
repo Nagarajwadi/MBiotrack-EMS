@@ -12,16 +12,15 @@ from app.schemas.attendance import (
     AttendanceReportResponse,
     DailyAttendanceOperationsResponse,
 )
+from app.api.auth import get_client_ip
 from app.services.attendance_service import AttendanceService
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["Attendance Ingestion"])
 
 
 def _extract_client_ip(request: Request) -> str:
-    """Extract client IP address defensively for audit attribution."""
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
+    """Extract client IP address defensively using centralized resolver."""
+    return get_client_ip(request)
 
 
 @router.post("/punch", response_model=AttendancePunchResponse, status_code=status.HTTP_201_CREATED)

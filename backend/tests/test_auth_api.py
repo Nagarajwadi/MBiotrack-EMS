@@ -354,3 +354,142 @@ def test_client_ip_malformed_forwarded_header_rejected(client: TestClient, monke
     )
     assert response2.status_code == 400
     assert response2.json()["detail"] == "Malformed X-Forwarded-For header."
+
+
+def test_client_ip_cf_connecting_ip_valid_ipv4(client: TestClient, monkeypatch, db_session: Session):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    test_ip = "203.0.113.195"
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": test_ip},
+    )
+    assert response.status_code == 401
+    audit = db_session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "AUTH_LOGIN_FAILED", AuditLog.ip_address == test_ip)
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.ip_address == test_ip
+
+
+def test_client_ip_cf_connecting_ip_valid_ipv6(client: TestClient, monkeypatch, db_session: Session):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    test_ip = "2001:db8::1"
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": test_ip},
+    )
+    assert response.status_code == 401
+    audit = db_session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "AUTH_LOGIN_FAILED", AuditLog.ip_address == test_ip)
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.ip_address == test_ip
+
+
+def test_client_ip_cf_connecting_ip_ignored_by_default(client: TestClient, monkeypatch, db_session: Session):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", False)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": "203.0.113.195"},
+    )
+    assert response.status_code == 401
+    audit = db_session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "AUTH_LOGIN_FAILED", AuditLog.ip_address == "testclient")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.ip_address == "testclient"
+
+
+def test_client_ip_cf_connecting_ip_missing_when_edge_trust_enabled(client: TestClient, monkeypatch, db_session: Session):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+    )
+    assert response.status_code == 401
+    audit = db_session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "AUTH_LOGIN_FAILED", AuditLog.ip_address == "testclient")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.ip_address == "testclient"
+
+
+def test_client_ip_cf_connecting_ip_malformed_rejected(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": "not-an-ip-address"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Malformed CF-Connecting-IP header."
+
+
+def test_client_ip_cf_connecting_ip_empty_rejected(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": "   "},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Malformed CF-Connecting-IP header."
+
+
+def test_client_ip_cf_connecting_ip_ambiguous_multiple_rejected(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={"CF-Connecting-IP": "203.0.113.1, 203.0.113.2"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Malformed CF-Connecting-IP header."
+
+
+def test_client_ip_cf_connecting_ip_ignores_spoofed_x_forwarded_for(client: TestClient, monkeypatch, db_session: Session):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    edge_ip = "203.0.113.50"
+    spoofed_ip = "198.51.100.99"
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "WrongPassword123!"},
+        headers={
+            "CF-Connecting-IP": edge_ip,
+            "X-Forwarded-For": spoofed_ip,
+        },
+    )
+    assert response.status_code == 401
+    audit = db_session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "AUTH_LOGIN_FAILED", AuditLog.ip_address == edge_ip)
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.ip_address == edge_ip
+
+
+def test_attendance_punch_uses_centralized_client_ip_resolver(client: TestClient, active_user: User, monkeypatch):
+    monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
+    token = create_access_token(subject=active_user.id)
+    response = client.post(
+        "/api/v1/attendance/punch",
+        json={"employee_id": 1, "device_id": 1, "punch_type": "CHECK_IN"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "CF-Connecting-IP": "invalid-ip-string",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Malformed CF-Connecting-IP header."

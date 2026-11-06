@@ -1,17 +1,18 @@
 import React from 'react';
 import type { User } from '../types/auth';
-import { canViewDirectory, canViewOwnProfile } from '../utils/permissions';
+import { canViewDirectory, canViewManagement, canViewOwnProfile } from '../utils/permissions';
 import './components.css';
 
 export type BackendStatus = 'checking' | 'online' | 'offline';
+export type ActiveView = 'directory' | 'profile' | 'attendance' | 'management' | 'leaves';
 
 export interface HeaderProps {
   status: BackendStatus;
   user?: User | null;
   onLogout?: () => void;
   isLoggingOut?: boolean;
-  activeView?: 'directory' | 'profile';
-  onNavigate?: (view: 'directory' | 'profile') => void;
+  activeView?: ActiveView;
+  onNavigate?: (view: ActiveView) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -49,7 +50,9 @@ export const Header: React.FC<HeaderProps> = ({
   const statusInfo = getStatusDetails();
   const hasDirectoryAccess = user ? canViewDirectory(user.role) : false;
   const hasProfileAccess = user ? canViewOwnProfile(user) : false;
-  const showNavTabs = user && hasDirectoryAccess && hasProfileAccess;
+  const hasManagementAccess = user ? canViewManagement(user.role) : false;
+  const isAdmin = user?.role === 'ADMIN';
+  const showNavTabs = user && (isAdmin || (hasDirectoryAccess && hasProfileAccess));
 
   return (
     <header className="mbiotrack-header" role="banner">
@@ -66,22 +69,52 @@ export const Header: React.FC<HeaderProps> = ({
 
         {showNavTabs && (
           <nav className="header-nav-tabs" aria-label="Main navigation">
+            {hasDirectoryAccess && (
+              <button
+                type="button"
+                className={`nav-tab-btn ${activeView === 'directory' ? 'active' : ''}`}
+                onClick={() => onNavigate && onNavigate('directory')}
+                aria-current={activeView === 'directory' ? 'page' : undefined}
+              >
+                Employee Directory
+              </button>
+            )}
             <button
               type="button"
-              className={`nav-tab-btn ${activeView === 'directory' ? 'active' : ''}`}
-              onClick={() => onNavigate && onNavigate('directory')}
-              aria-current={activeView === 'directory' ? 'page' : undefined}
+              className={`nav-tab-btn ${activeView === 'attendance' ? 'active' : ''}`}
+              onClick={() => onNavigate && onNavigate('attendance')}
+              aria-current={activeView === 'attendance' ? 'page' : undefined}
             >
-              Employee Directory
+              Attendance
             </button>
             <button
               type="button"
-              className={`nav-tab-btn ${activeView === 'profile' ? 'active' : ''}`}
-              onClick={() => onNavigate && onNavigate('profile')}
-              aria-current={activeView === 'profile' ? 'page' : undefined}
+              className={`nav-tab-btn ${activeView === 'leaves' ? 'active' : ''}`}
+              onClick={() => onNavigate && onNavigate('leaves')}
+              aria-current={activeView === 'leaves' ? 'page' : undefined}
             >
-              My Profile
+              Leaves & Holidays
             </button>
+            {hasManagementAccess && (
+              <button
+                type="button"
+                className={`nav-tab-btn ${activeView === 'management' ? 'active' : ''}`}
+                onClick={() => onNavigate && onNavigate('management')}
+                aria-current={activeView === 'management' ? 'page' : undefined}
+              >
+                Offices & Devices
+              </button>
+            )}
+            {hasProfileAccess && (
+              <button
+                type="button"
+                className={`nav-tab-btn ${activeView === 'profile' ? 'active' : ''}`}
+                onClick={() => onNavigate && onNavigate('profile')}
+                aria-current={activeView === 'profile' ? 'page' : undefined}
+              >
+                My Profile
+              </button>
+            )}
           </nav>
         )}
 

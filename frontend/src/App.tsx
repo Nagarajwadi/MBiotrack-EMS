@@ -7,14 +7,18 @@ import {
   updateEmployee,
 } from './api/employeeApi';
 import {
+  type ActiveView,
   type BackendStatus,
+  AttendanceView,
   AuditLogModal,
   DeleteModal,
   EmployeeModal,
   EmployeeProfileView,
   EmployeeTable,
   Header,
+  LeaveAndHolidayView,
   LoginForm,
+  ManagementView,
 } from './components';
 import { useAuth } from './context/useAuth';
 import {
@@ -28,6 +32,7 @@ import {
   canDeactivateEmployee,
   canViewAuditTrail,
   canViewDirectory,
+  canViewManagement,
   canViewOwnProfile,
 } from './utils/permissions';
 
@@ -49,17 +54,31 @@ function App() {
   const [isLoggingOut, setIsLoggingOut] = useState<boolean>(false);
 
   // Role-aware view state
-  const [viewPreference, setViewPreference] = useState<'directory' | 'profile'>('directory');
+  const [viewPreference, setViewPreference] = useState<ActiveView>('directory');
 
   const hasDirectoryAccess = canViewDirectory(user?.role);
   const hasProfileAccess = canViewOwnProfile(user);
+  const hasManagementAccess = canViewManagement(user?.role);
 
-  // Effective view: fallback to profile if user cannot view directory, or directory if no linked profile
-  const activeView: 'directory' | 'profile' = !hasDirectoryAccess
-    ? 'profile'
-    : !hasProfileAccess
-      ? 'directory'
-      : viewPreference;
+  // Determine effective view based on permissions and preference
+  let activeView: ActiveView = 'directory';
+  if (!hasDirectoryAccess) {
+    if (viewPreference === 'leaves') {
+      activeView = 'leaves';
+    } else if (viewPreference === 'attendance') {
+      activeView = 'attendance';
+    } else {
+      activeView = 'profile';
+    }
+  } else if (viewPreference === 'management' && hasManagementAccess) {
+    activeView = 'management';
+  } else if (viewPreference === 'leaves') {
+    activeView = 'leaves';
+  } else if (!hasProfileAccess) {
+    activeView = viewPreference === 'attendance' ? 'attendance' : 'directory';
+  } else {
+    activeView = viewPreference;
+  }
 
   // Synchronous tracking refs to protect against stale closures & cross-session leakage
   const sessionEpochRef = useRef<number>(sessionEpoch);
@@ -485,8 +504,67 @@ function App() {
             />
           </div>
         </div>
+      ) : activeView === 'management' && user && hasManagementAccess ? (
+        <ManagementView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+          onNavigateToDirectory={() => setViewPreference('directory')}
+        />
+      ) : activeView === 'leaves' && user ? (
+        <LeaveAndHolidayView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+          onNavigateToDirectory={
+            hasDirectoryAccess ? () => setViewPreference('directory') : undefined
+          }
+          onNavigateToProfile={
+            hasProfileAccess ? () => setViewPreference('profile') : undefined
+          }
+          onNavigateToAttendance={() => setViewPreference('attendance')}
+        />
+      ) : activeView === 'attendance' && user ? (
+        <AttendanceView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+          onNavigateToDirectory={
+            hasDirectoryAccess ? () => setViewPreference('directory') : undefined
+          }
+          onNavigateToProfile={
+            hasProfileAccess ? () => setViewPreference('profile') : undefined
+          }
+        />
       ) : activeView === 'profile' ? (
         <main className="dashboard-wrapper">
+          {user?.role === 'EMPLOYEE' && (
+            <div className="employee-subnav" role="tablist" aria-label="Employee navigation">
+              <button
+                type="button"
+                role="tab"
+                aria-selected="true"
+                className="nav-tab-btn active"
+              >
+                My Profile
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                className="nav-tab-btn"
+                onClick={() => setViewPreference('attendance')}
+              >
+                My Attendance
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                className="nav-tab-btn"
+                onClick={() => setViewPreference('leaves')}
+              >
+                Leaves & Holidays
+              </button>
+            </div>
+          )}
           {feedback && (
             <div
               className={`alert-banner ${feedback.type}`}
@@ -540,6 +618,32 @@ function App() {
               <p>Manage employee records, organizational departments, and account statuses.</p>
             </div>
             <div className="dashboard-actions-group">
+              <button
+                type="button"
+                className="btn btn-secondary btn-attendance"
+                onClick={() => setViewPreference('attendance')}
+                title="View normalized attendance punch records"
+              >
+                📅 Attendance
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-leaves"
+                onClick={() => setViewPreference('leaves')}
+                title="View leave requests and holiday calendar"
+              >
+                🌴 Leaves & Holidays
+              </button>
+              {hasManagementAccess && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-management"
+                  onClick={() => setViewPreference('management')}
+                  title="Manage offices, devices, and employee assignments"
+                >
+                  🏢 Offices & Devices
+                </button>
+              )}
               {canViewAuditTrail(user?.role) && (
                 <button
                   type="button"

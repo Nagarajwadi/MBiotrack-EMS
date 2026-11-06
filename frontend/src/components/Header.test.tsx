@@ -70,6 +70,63 @@ describe('Header component', () => {
       expect(mockNavigate).toHaveBeenCalledWith('profile');
     });
 
+    it('allows navigating to attendance tab for dual-access users', async () => {
+      const user = userEvent.setup();
+      render(
+        <Header
+          status="online"
+          user={mockAdminUser}
+          activeView="directory"
+          onNavigate={mockNavigate}
+        />
+      );
+
+      const attendanceBtn = screen.getByRole('button', { name: /^attendance$/i });
+      expect(attendanceBtn).toBeInTheDocument();
+      expect(attendanceBtn).not.toHaveAttribute('aria-current');
+
+      await user.click(attendanceBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('attendance');
+    });
+
+    it('allows navigating to offices & devices tab for dual-access users', async () => {
+      const user = userEvent.setup();
+      render(
+        <Header
+          status="online"
+          user={mockAdminUser}
+          activeView="directory"
+          onNavigate={mockNavigate}
+        />
+      );
+
+      const mgmtBtn = screen.getByRole('button', { name: /offices & devices/i });
+      expect(mgmtBtn).toBeInTheDocument();
+      expect(mgmtBtn).not.toHaveAttribute('aria-current');
+
+      await user.click(mgmtBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('management');
+    });
+
+    it('allows navigating to leaves & holidays tab for dual-access users', async () => {
+      const user = userEvent.setup();
+      render(
+        <Header
+          status="online"
+          user={mockAdminUser}
+          activeView="directory"
+          onNavigate={mockNavigate}
+        />
+      );
+
+      const leavesBtn = screen.getByRole('button', { name: /leaves & holidays/i });
+      expect(leavesBtn).toBeInTheDocument();
+      expect(leavesBtn).not.toHaveAttribute('aria-current');
+
+      await user.click(leavesBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('leaves');
+    });
+
     it('renders navigation tabs for MANAGER with a linked employee profile', async () => {
       const user = userEvent.setup();
       render(
@@ -91,7 +148,8 @@ describe('Header component', () => {
       expect(mockNavigate).toHaveBeenCalledWith('directory');
     });
 
-    it('OMITS navigation tabs for unlinked ADMIN (employee_id === null)', () => {
+    it('renders management and directory navigation for unlinked ADMIN while omitting profile', async () => {
+      const user = userEvent.setup();
       render(
         <Header
           status="online"
@@ -101,8 +159,22 @@ describe('Header component', () => {
         />
       );
 
-      expect(screen.queryByRole('navigation', { name: /main navigation/i })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /my profile/i })).not.toBeInTheDocument();
+      const nav = screen.getByRole('navigation', { name: /main navigation/i });
+      expect(nav).toBeInTheDocument();
+
+      const dirBtn = screen.getByRole('button', { name: /employee directory/i });
+      const attendanceBtn = screen.getByRole('button', { name: /^attendance$/i });
+      const mgmtBtn = screen.getByRole('button', { name: /offices & devices/i });
+      const profileBtn = screen.queryByRole('button', { name: /my profile/i });
+
+      expect(dirBtn).toBeInTheDocument();
+      expect(attendanceBtn).toBeInTheDocument();
+      expect(mgmtBtn).toBeInTheDocument();
+      // Unlinked ADMIN has employee_id === null; profile navigation must be strictly omitted
+      expect(profileBtn).not.toBeInTheDocument();
+
+      await user.click(mgmtBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('management');
     });
 
     it('OMITS navigation tabs for EMPLOYEE (only has profile view)', () => {
@@ -120,4 +192,3 @@ describe('Header component', () => {
     });
   });
 });
-

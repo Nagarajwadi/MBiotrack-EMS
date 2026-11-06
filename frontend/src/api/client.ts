@@ -102,3 +102,57 @@ export async function apiFetch<T>(endpoint: string, options: ApiFetchOptions = {
   return await handleResponse<T>(response, endpoint, requestEpoch);
 }
 
+export async function apiFetchBlob(endpoint: string, options: ApiFetchOptions = {}): Promise<Blob> {
+  const requestEpoch = epochProvider();
+  const headers = new Headers(options.headers);
+
+  if (!options.skipAuth) {
+    const authToken = options.token ?? tokenProvider();
+    if (authToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      ...options,
+      headers,
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw err;
+    }
+    throw new ApiError(
+      0,
+      'Unable to connect to the backend server. Please verify the FastAPI service is running on port 8000.'
+    );
+  }
+
+  if (response.ok) {
+    return await response.blob();
+  }
+
+  let errorDetail: string | ApiValidationError[] =
+    response.statusText || (response.status >= 500 ? 'Internal server error' : 'Request failed');
+
+  let retryAfter: number | undefined;
+  if (response.status === 429) {
+    retryAfter = parseRetryAfter(response.headers.get('Retry-After'));
+  }
+
+  try {
+    const errorBody = await response.json();
+    if (errorBody && errorBody.detail !== undefined) {
+      errorDetail = errorBody.detail;
+    }
+  } catch {
+    // Response body is not valid JSON
+  }
+
+  if (response.status === 401) {
+    unauthorizedCallback(requestEpoch);
+  }
+
+  throw new ApiError(response.status, errorDetail, undefined, retryAfter);
+}

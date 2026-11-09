@@ -33,6 +33,14 @@ export function canDeactivateEmployee(role?: UserRole): boolean {
 }
 
 /**
+ * Evaluates whether the user's role permits reactivating previously deactivated employees.
+ * Strictly permitted for ADMIN only. Prohibited for MANAGER and EMPLOYEE.
+ */
+export function canReactivateEmployee(role?: UserRole): boolean {
+  return role === 'ADMIN';
+}
+
+/**
  * Evaluates whether the user's role permits viewing the security and compliance audit trail.
  * Strictly permitted for ADMIN only. Prohibited for MANAGER and EMPLOYEE.
  */
@@ -103,3 +111,20 @@ export function canReviewLeave(role?: UserRole): boolean {
 export function canManageHolidays(role?: UserRole): boolean {
   return role === 'ADMIN';
 }
+
+/**
+ * Evaluates whether the user's role permits accessing the manager team attendance overview.
+ * Permitted for ADMIN and MANAGER. Strictly prohibited for EMPLOYEE.
+ */
+export function canViewTeamAttendance(role?: UserRole): boolean {
+  return role === 'ADMIN' || role === 'MANAGER';
+}
+
+/**
+ * Evaluates whether the user's role permits managing user login accounts.
+ * Strictly permitted for ADMIN only. Prohibited for MANAGER and EMPLOYEE.
+ */
+export function canManageUsers(role?: UserRole): boolean {
+  return role === 'ADMIN';
+}
+

@@ -4,11 +4,15 @@ import {
   getAttendanceRecords,
   getAttendanceReport,
   getDailyAttendanceOperations,
+  recordAttendancePunch,
 } from '../api/attendanceApi';
+import { ApiError } from '../api/apiError';
 import { getOffices } from '../api/officeApi';
+import { PunchModal } from './PunchModal';
 import type {
   AttendanceEventDetail,
   AttendanceFilterParams,
+  AttendancePunchCreatePayload,
   AttendanceReportFilterParams,
   AttendanceReportResponse,
   DailyAttendanceOperationsResponse,
@@ -25,6 +29,8 @@ export interface AttendanceViewProps {
   initialTab?: 'operations' | 'reports' | 'events';
   onNavigateToDirectory?: () => void;
   onNavigateToProfile?: () => void;
+  onNavigateToLeaves?: () => void;
+  onNavigateToDashboard?: () => void;
 }
 
 const PAGE_SIZE = 25;
@@ -42,6 +48,8 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   initialTab = 'operations',
   onNavigateToDirectory,
   onNavigateToProfile,
+  onNavigateToLeaves,
+  onNavigateToDashboard,
 }) => {
   const isEmployee = currentUser.role === 'EMPLOYEE';
   const isAdmin = currentUser.role === 'ADMIN';
@@ -95,6 +103,23 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
   // Selected employee item for punch inspection modal
   const [inspectingEmployee, setInspectingEmployee] = useState<EmployeeDailyAttendanceItem | null>(null);
+
+  // Punch Modal & Quick-Punch State
+  const [isPunchModalOpen, setIsPunchModalOpen] = useState<boolean>(false);
+  const [punchModalDefaultType, setPunchModalDefaultType] = useState<'CHECK_IN' | 'CHECK_OUT'>('CHECK_IN');
+  const [punchTargetEmployee, setPunchTargetEmployee] = useState<{ id: number; name: string; code: string } | null>(null);
+  const [isPunchSubmitting, setIsPunchSubmitting] = useState<boolean>(false);
+  const [punchServerError, setPunchServerError] = useState<string | null>(null);
+  const [punchFeedback, setPunchFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Auto-dismiss punch feedback notification
+  useEffect(() => {
+    if (!punchFeedback) return;
+    const timer = window.setTimeout(() => {
+      setPunchFeedback(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [punchFeedback]);
 
   // Load Daily Operations data when filters, pagination, or tab changes
   useEffect(() => {
@@ -567,6 +592,85 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
     }
   };
 
+  // Target employee daily attendance record for quick status calculation
+  const currentEmployeeDailyRecord = useMemo<EmployeeDailyAttendanceItem | null>(() => {
+    if (!opData?.employees || opData.employees.length === 0) return null;
+    if (currentUser.employee_id) {
+      const match = opData.employees.find((e) => e.employee_id === currentUser.employee_id);
+      if (match) return match;
+    }
+    return isEmployee ? opData.employees[0] : null;
+  }, [opData, currentUser.employee_id, isEmployee]);
+
+  const employeePunchState = useMemo(() => {
+    if (!currentEmployeeDailyRecord || !currentEmployeeDailyRecord.punches || currentEmployeeDailyRecord.punches.length === 0) {
+      return {
+        status: 'NOT_CHECKED_IN' as const,
+        lastPunchTime: null as string | null,
+        lastPunchType: null as string | null,
+        recommendedAction: 'CHECK_IN' as const,
+      };
+    }
+    const punches = currentEmployeeDailyRecord.punches;
+    const lastPunch = punches[punches.length - 1];
+    if (lastPunch.punch_type === 'CHECK_IN') {
+      return {
+        status: 'CHECKED_IN' as const,
+        lastPunchTime: lastPunch.event_timestamp,
+        lastPunchType: 'CHECK_IN' as const,
+        recommendedAction: 'CHECK_OUT' as const,
+      };
+    } else {
+      return {
+        status: 'CHECKED_OUT' as const,
+        lastPunchTime: lastPunch.event_timestamp,
+        lastPunchType: 'CHECK_OUT' as const,
+        recommendedAction: 'CHECK_IN' as const,
+      };
+    }
+  }, [currentEmployeeDailyRecord]);
+
+  const handleOpenPunchModal = (
+    type?: 'CHECK_IN' | 'CHECK_OUT',
+    target?: { id: number; name: string; code: string } | null
+  ) => {
+    setPunchServerError(null);
+    setPunchModalDefaultType(type || employeePunchState.recommendedAction);
+    setPunchTargetEmployee(target || (currentUser.employee_id ? { id: currentUser.employee_id, name: currentUser.full_name, code: '' } : null));
+    setIsPunchModalOpen(true);
+  };
+
+  const handlePunchSubmit = async (payload: AttendancePunchCreatePayload) => {
+    if (isPunchSubmitting) return;
+    setIsPunchSubmitting(true);
+    setPunchServerError(null);
+
+    try {
+      const response = await recordAttendancePunch(payload);
+      setIsPunchModalOpen(false);
+      const actionLabel = response.punch_type === 'CHECK_IN' ? 'Check In' : 'Check Out';
+      const timeStr = formatTimeOnly(response.event_timestamp);
+      setPunchFeedback({
+        type: 'success',
+        message: `${actionLabel} recorded successfully at ${timeStr}${response.is_roaming ? ' (Out-of-assignment roaming recorded under GOV-08)' : ''}.`,
+      });
+      // Refresh daily operations, event feed, and reports
+      setOpReloadTrigger((prev) => prev + 1);
+      setEventReloadTrigger((prev) => prev + 1);
+      setReportReloadTrigger((prev) => prev + 1);
+    } catch (err: unknown) {
+      if (err instanceof ApiError) {
+        setPunchServerError(err.message);
+      } else if (err instanceof Error) {
+        setPunchServerError(err.message);
+      } else {
+        setPunchServerError('An unexpected error occurred while recording the attendance punch.');
+      }
+    } finally {
+      setIsPunchSubmitting(false);
+    }
+  };
+
   // View headings
   const opTitle = isEmployee
     ? 'My Daily Attendance'
@@ -603,15 +707,28 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       {/* Employee top subnav when viewing profile / attendance */}
       {isEmployee && (
         <div className="employee-subnav" role="tablist" aria-label="Employee navigation">
-          <button
-            type="button"
-            role="tab"
-            aria-selected="false"
-            className="nav-tab-btn"
-            onClick={onNavigateToProfile}
-          >
-            My Profile
-          </button>
+          {onNavigateToDashboard && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected="false"
+              className="nav-tab-btn"
+              onClick={onNavigateToDashboard}
+            >
+              Dashboard
+            </button>
+          )}
+          {onNavigateToProfile && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected="false"
+              className="nav-tab-btn"
+              onClick={onNavigateToProfile}
+            >
+              My Profile
+            </button>
+          )}
           <button
             type="button"
             role="tab"
@@ -619,6 +736,39 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
             className="nav-tab-btn active"
           >
             My Attendance
+          </button>
+          {onNavigateToLeaves && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected="false"
+              className="nav-tab-btn"
+              onClick={onNavigateToLeaves}
+            >
+              Leaves & Holidays
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Attendance Punch Feedback Banner */}
+      {punchFeedback && (
+        <div
+          className={`alert-banner ${punchFeedback.type === 'success' ? 'success' : 'error'}`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="alert-content">
+            <span aria-hidden="true">{punchFeedback.type === 'success' ? '✓' : '⚠️'}</span>
+            <span>{punchFeedback.message}</span>
+          </div>
+          <button
+            type="button"
+            className="alert-close"
+            aria-label="Close notification"
+            onClick={() => setPunchFeedback(null)}
+          >
+            ×
           </button>
         </div>
       )}
@@ -701,6 +851,87 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
               >
                 🔄 Refresh
               </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => handleOpenPunchModal()}
+                title="Record an attendance check-in or check-out punch"
+              >
+                ⏱️ Record Punch
+              </button>
+            </div>
+          </div>
+
+          {/* Quick-Punch Attendance Status Card */}
+          <div className="punch-action-card" data-testid="punch-status-card">
+            <div className="punch-action-status">
+              <div
+                className={`punch-status-indicator ${
+                  employeePunchState.status === 'CHECKED_IN'
+                    ? 'status-checked-in'
+                    : employeePunchState.status === 'CHECKED_OUT'
+                    ? 'status-checked-out'
+                    : 'status-not-punched'
+                }`}
+                aria-hidden="true"
+              >
+                {employeePunchState.status === 'CHECKED_IN'
+                  ? '🟢'
+                  : employeePunchState.status === 'CHECKED_OUT'
+                  ? '🔴'
+                  : '⏳'}
+              </div>
+              <div className="punch-status-text">
+                <div className="punch-status-title">
+                  <span>{isEmployee ? 'My Attendance Status:' : `${currentUser.full_name}:`}</span>
+                  <span className="punch-status-badge">
+                    {employeePunchState.status === 'CHECKED_IN'
+                      ? 'Currently Checked In'
+                      : employeePunchState.status === 'CHECKED_OUT'
+                      ? 'Currently Checked Out'
+                      : 'Not Checked In Today'}
+                  </span>
+                </div>
+                <span className="punch-status-desc">
+                  {employeePunchState.status === 'CHECKED_IN' && employeePunchState.lastPunchTime
+                    ? `Checked in at ${formatTimeOnly(employeePunchState.lastPunchTime)}`
+                    : employeePunchState.status === 'CHECKED_OUT' && employeePunchState.lastPunchTime
+                    ? `Checked out at ${formatTimeOnly(employeePunchState.lastPunchTime)}`
+                    : 'No punches recorded for today yet'}
+                </span>
+              </div>
+            </div>
+
+            <div className="punch-action-controls">
+              {employeePunchState.recommendedAction === 'CHECK_IN' ? (
+                <button
+                  type="button"
+                  className="btn btn-punch-in"
+                  onClick={() => handleOpenPunchModal('CHECK_IN')}
+                  title="Submit a Check In punch"
+                >
+                  🟢 Check In
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-punch-out"
+                  onClick={() => handleOpenPunchModal('CHECK_OUT')}
+                  title="Submit a Check Out punch"
+                >
+                  🔴 Check Out
+                </button>
+              )}
+              {!isEmployee && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handleOpenPunchModal()}
+                  title="Record punch for an employee"
+                >
+                  ⏱️ Manual Punch...
+                </button>
+              )}
             </div>
           </div>
 
@@ -2068,6 +2299,24 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
           )}
         </section>
       )}
+
+      {/* Attendance Punch Confirmation Modal */}
+      <PunchModal
+        isOpen={isPunchModalOpen}
+        currentUser={currentUser}
+        defaultPunchType={punchModalDefaultType}
+        targetEmployeeId={punchTargetEmployee?.id}
+        targetEmployeeName={punchTargetEmployee?.name}
+        isSubmitting={isPunchSubmitting}
+        serverError={punchServerError}
+        onClose={() => {
+          if (!isPunchSubmitting) {
+            setIsPunchModalOpen(false);
+            setPunchServerError(null);
+          }
+        }}
+        onSubmit={handlePunchSubmit}
+      />
     </main>
   );
 };

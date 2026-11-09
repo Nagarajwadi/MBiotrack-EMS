@@ -7,9 +7,11 @@ export interface EmployeeTableProps {
   isLoading: boolean;
   totalCount?: number;
   canDeactivate?: boolean;
+  canReactivate?: boolean;
   onClearFilters?: () => void;
   onEdit: (employee: Employee) => void;
   onDelete: (employee: Employee) => void;
+  onReactivate?: (employee: Employee) => void;
 }
 
 export const EmployeeTable: React.FC<EmployeeTableProps> = ({
@@ -17,9 +19,11 @@ export const EmployeeTable: React.FC<EmployeeTableProps> = ({
   isLoading,
   totalCount,
   canDeactivate = true,
+  canReactivate = false,
   onClearFilters,
   onEdit,
   onDelete,
+  onReactivate,
 }) => {
   if (isLoading) {
     return (
@@ -104,31 +108,71 @@ export const EmployeeTable: React.FC<EmployeeTableProps> = ({
                 </td>
                 <td>
                   <span
-                    className={`status-badge ${emp.is_active ? 'active' : 'inactive'}`}
+                    className={`status-badge ${emp.is_active && !emp.deleted_at ? 'active' : 'inactive'}`}
                     role="status"
+                    data-testid={`employee-status-badge-${emp.id}`}
                   >
-                    {emp.is_active ? 'Active' : 'Inactive'}
+                    {emp.is_active && !emp.deleted_at ? 'Active' : 'Inactive'}
                   </span>
                 </td>
                 <td>
                   <div className="actions-cell">
-                    <button
-                      type="button"
-                      className="btn-action-edit"
-                      onClick={() => onEdit(emp)}
-                      aria-label={`Edit ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
-                    >
-                      Edit
-                    </button>
-                    {canDeactivate && (
-                      <button
-                        type="button"
-                        className="btn-action-delete"
-                        onClick={() => onDelete(emp)}
-                        aria-label={`Delete ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
-                      >
-                        Delete
-                      </button>
+                    {emp.is_active && !emp.deleted_at ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-action-edit"
+                          onClick={() => onEdit(emp)}
+                          aria-label={`Edit ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
+                          data-testid={`edit-employee-btn-${emp.id}`}
+                        >
+                          Edit
+                        </button>
+                        {canDeactivate && (
+                          <button
+                            type="button"
+                            className="btn-action-delete"
+                            onClick={() => onDelete(emp)}
+                            aria-label={`Delete ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
+                            data-testid={`delete-employee-btn-${emp.id}`}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {canReactivate && onReactivate && (
+                          <button
+                            type="button"
+                            className="btn-action-reactivate"
+                            onClick={() => onReactivate(emp)}
+                            aria-label={`Reactivate ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
+                            data-testid={`reactivate-employee-btn-${emp.id}`}
+                            style={{
+                              padding: '4px 10px',
+                              fontSize: '0.8rem',
+                              borderRadius: '4px',
+                              border: '1px solid #16a34a',
+                              backgroundColor: '#f0fdf4',
+                              color: '#15803d',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Reactivate
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn-action-edit"
+                          onClick={() => onEdit(emp)}
+                          aria-label={`Edit ${emp.first_name} ${emp.last_name} (${emp.employee_code})`}
+                          data-testid={`edit-employee-btn-${emp.id}`}
+                        >
+                          Edit
+                        </button>
+                      </>
                     )}
                   </div>
                 </td>

@@ -35,6 +35,25 @@ class LogoutResponse(BaseModel):
     message: str = "Logged out successfully. Discard token on client."
 
 
+class MessageResponse(BaseModel):
+    """Generic message response payload."""
+
+    message: str
+
+
+class PasswordChangeRequest(BaseModel):
+    """Payload for authenticated self-service password change."""
+
+    current_password: str = Field(
+        min_length=1, max_length=128, description="Current plaintext password"
+    )
+    new_password: str = Field(
+        min_length=12,
+        max_length=128,
+        description="New plaintext password (minimum 12 characters for Argon2id)",
+    )
+
+
 class UserResponse(BaseModel):
     """Sanitized user profile response. Explicitly excludes password_hash and secrets."""
 

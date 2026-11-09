@@ -6,10 +6,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    derive_pwd_fingerprint,
+    hash_password,
+    verify_password,
+)
 from app.models.audit_log import AuditLog
 from app.models.user import User
-from app.schemas.auth import LoginRequest, TokenResponse, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    MessageResponse,
+    PasswordChangeRequest,
+    TokenResponse,
+    UserResponse,
+)
 
 settings = get_settings()
 
@@ -154,8 +165,14 @@ class AuthService:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            # 6. Inactive account: account enumeration protection (generic 401 response)
-            if not user.is_active:
+            # 6. Inactive account or linked employee: account enumeration protection (generic 401 response)
+            is_employee_inactive = False
+            if user.employee_id is not None:
+                employee = user.employee
+                if employee is None or not employee.is_active or employee.deleted_at is not None:
+                    is_employee_inactive = True
+
+            if not user.is_active or is_employee_inactive:
                 AuthService._record_failed_attempt(
                     db, client_ip, norm_email, reason="account_inactive"
                 )
@@ -169,13 +186,54 @@ class AuthService:
             AuthService._record_successful_login(db, client_ip, user)
 
             # 8. Issue token ONLY after audit write succeeds
-            token = create_access_token(subject=user.id)
+            token = create_access_token(
+                subject=user.id,
+                extra_claims={"pwd": derive_pwd_fingerprint(user.password_hash)},
+            )
 
             return TokenResponse(
                 access_token=token,
                 token_type="bearer",
                 expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             )
+        except Exception:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def change_password(
+        db: Session,
+        current_user: User,
+        payload: PasswordChangeRequest,
+        client_ip: str,
+    ) -> MessageResponse:
+        """Self-service password change for authenticated users."""
+        if not verify_password(payload.current_password, current_user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Incorrect current password.",
+            )
+
+        new_hash = hash_password(payload.new_password)
+        current_user.password_hash = new_hash
+        current_user.updated_at = func.now()
+
+        try:
+            audit = AuditLog(
+                actor_user_id=current_user.id,
+                action="AUTH_PASSWORD_CHANGE",
+                target_type="user",
+                target_id=str(current_user.id),
+                ip_address=client_ip,
+                metadata_={
+                    "user_id": current_user.id,
+                    "role": current_user.role,
+                },
+            )
+            db.add(audit)
+            db.commit()
+            db.refresh(current_user)
+            return MessageResponse(message="Password changed successfully.")
         except Exception:
             db.rollback()
             raise

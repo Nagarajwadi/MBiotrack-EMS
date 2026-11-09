@@ -39,6 +39,7 @@ def submit_leave_request(
 @router.get("", response_model=LeaveRequestListResponse)
 def list_leave_requests(
     employee_id: int | None = Query(default=None, description="Filter by employee ID (restricted for EMPLOYEE role)"),
+    department: str | None = Query(default=None, description="Filter by department (ADMIN only; MANAGER is scoped automatically)"),
     status: str | None = Query(default=None, description="Filter by status (PENDING, APPROVED, REJECTED, CANCELLED)"),
     leave_type: str | None = Query(default=None, description="Filter by leave type (ANNUAL, SICK, CASUAL, UNPAID)"),
     start_date: date | None = Query(default=None, description="Filter requests overlapping on or after this date"),
@@ -51,12 +52,14 @@ def list_leave_requests(
     """List leave requests with role scoping and filters.
 
     - EMPLOYEE: Can view only their own requests.
-    - MANAGER / ADMIN: Organization-wide query access across all active employees.
+    - MANAGER: Scoped strictly to employees within their authorized department team.
+    - ADMIN: Organization-wide query access across all active employees.
     """
     return LeaveService.list_leave_requests(
         db=db,
         current_user=current_user,
         employee_id=employee_id,
+        department=department,
         status_filter=status,
         leave_type_filter=leave_type,
         start_date=start_date,

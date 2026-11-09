@@ -423,4 +423,62 @@ describe('LeaveAndHolidayView component', () => {
       });
     });
   });
+
+  describe('Manager Team Leave Scoping and Approvals', () => {
+    it('renders team metrics and department badge when scoped to manager team', async () => {
+      vi.spyOn(leaveApi, 'getLeaveRequests').mockResolvedValueOnce({
+        items: [sampleLeaves[1]], // Jane Colleague (Engineering)
+        total: 1,
+        limit: 20,
+        offset: 0,
+        department: 'Engineering',
+      });
+
+      render(<LeaveAndHolidayView currentUser={mockManagerUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('manager-department-badge')).toHaveTextContent('Department: Engineering');
+      });
+
+      expect(screen.getByText('Team Requests')).toBeInTheDocument();
+      expect(screen.getByText('Team Pending')).toBeInTheDocument();
+      expect(screen.getByText('Team Approved')).toBeInTheDocument();
+    });
+
+    it('displays warning alert banner when manager user is not linked to an employee profile', async () => {
+      const mockUnlinkedManager = {
+        ...mockManagerUser,
+        employee_id: null,
+      };
+
+      render(<LeaveAndHolidayView currentUser={mockUnlinkedManager} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('unlinked-manager-warning')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('unlinked-manager-warning')).toHaveTextContent(
+        /not linked to an employee profile/i
+      );
+    });
+
+    it('allows Admin to filter leave requests by department', async () => {
+      const user = userEvent.setup();
+      render(<LeaveAndHolidayView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('leave-department-filter')).toBeInTheDocument();
+      });
+
+      const deptFilter = screen.getByTestId('leave-department-filter');
+      await user.selectOptions(deptFilter, 'Engineering');
+
+      await waitFor(() => {
+        expect(leaveApi.getLeaveRequests).toHaveBeenCalledWith(
+          expect.objectContaining({
+            department: 'Engineering',
+          })
+        );
+      });
+    });
+  });
 });

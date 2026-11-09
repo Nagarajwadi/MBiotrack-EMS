@@ -30,6 +30,9 @@ export async function getLeaveRequests(
   if (params?.employee_id !== undefined && params.employee_id !== null) {
     query.set('employee_id', String(params.employee_id));
   }
+  if (params?.department && params.department.trim() && params.department.trim().toUpperCase() !== 'ALL') {
+    query.set('department', params.department.trim());
+  }
   if (params?.status && params.status.trim()) {
     query.set('status', params.status.trim());
   }

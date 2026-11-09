@@ -6,10 +6,14 @@ from app.db.session import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.schemas.attendance import (
+    AttendanceExceptionListResponse,
     AttendanceListResponse,
     AttendancePunchCreate,
     AttendancePunchResponse,
     AttendanceReportResponse,
+    AttendanceReviewCreate,
+    AttendanceReviewHistoryResponse,
+    AttendanceReviewResponse,
     DailyAttendanceOperationsResponse,
 )
 from app.api.auth import get_client_ip
@@ -60,6 +64,7 @@ def get_attendance(
     is_roaming: bool | None = Query(default=None, description="Filter by roaming status"),
     limit: int = Query(default=50, ge=1, le=100, description="Max records to return"),
     offset: int = Query(default=0, ge=0, description="Records offset for pagination"),
+    scope: str | None = Query(default=None, description="Scope filter ('team' scopes to manager's authorized department team)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -81,6 +86,7 @@ def get_attendance(
         is_roaming=is_roaming,
         limit=limit,
         offset=offset,
+        scope=scope,
     )
 
 
@@ -92,6 +98,7 @@ def get_daily_operations(
     employee_id: int | None = Query(default=None, description="Filter by employee ID (restricted for EMPLOYEE role)"),
     limit: int = Query(default=50, ge=1, le=100, description="Max employee rows to return"),
     offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    scope: str | None = Query(default=None, description="Scope filter ('team' scopes to manager's authorized department team)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -109,6 +116,36 @@ def get_daily_operations(
         employee_id=employee_id,
         limit=limit,
         offset=offset,
+        scope=scope,
+    )
+
+
+@router.get("/team-summary", response_model=DailyAttendanceOperationsResponse)
+@router.get("/team-operations", response_model=DailyAttendanceOperationsResponse)
+def get_team_attendance(
+    date: str | None = Query(default=None, description="Operational date (YYYY-MM-DD); defaults to current date"),
+    office_id: int | None = Query(default=None, description="Filter by physical or assigned office ID"),
+    employee_id: int | None = Query(default=None, description="Filter by employee ID within manager's authorized team"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max employee rows to return"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve Manager Team Attendance Overview scoped strictly to the manager's authorized department team.
+
+    - MANAGER: Strictly scoped to employees in manager's linked department. Cross-team queries return HTTP 403.
+    - ADMIN: Organization-wide team attendance visibility.
+    - EMPLOYEE: Forbidden (HTTP 403).
+    """
+    return AttendanceService.get_daily_operations(
+        db=db,
+        current_user=current_user,
+        date_str=date,
+        office_id=office_id,
+        employee_id=employee_id,
+        limit=limit,
+        offset=offset,
+        scope="team",
     )
 
 
@@ -169,4 +206,76 @@ def export_attendance_report_csv(
         content=csv_bytes,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/exceptions", response_model=AttendanceExceptionListResponse)
+def get_attendance_exceptions(
+    date: str | None = Query(default=None, description="Operational date (YYYY-MM-DD); defaults to current date"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max exception rows to return"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve list of attendance exceptions requiring manager attention.
+
+    - MANAGER: Scoped strictly to roaming exceptions within manager's authorized team department.
+    - ADMIN: Organization-wide attendance exception visibility.
+    - EMPLOYEE: Forbidden (HTTP 403).
+    """
+    return AttendanceService.get_attendance_exceptions(
+        db=db,
+        current_user=current_user,
+        date_str=date,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/reviews", response_model=AttendanceReviewResponse, status_code=status.HTTP_201_CREATED)
+def acknowledge_exception(
+    payload: AttendanceReviewCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit an auditable manager acknowledgement for an attendance exception.
+
+    - MANAGER: Scoped strictly to employees in manager's linked department.
+    - ADMIN: Organization-wide review authority.
+    - EMPLOYEE / Unlinked MANAGER: Forbidden (HTTP 403).
+    - Requires presence of an authoritative roaming punch exception on the target attendance date.
+    - Enforces idempotent retry safety and records atomic audit log entry.
+    """
+    client_ip = _extract_client_ip(request)
+    return AttendanceService.acknowledge_exception(
+        db=db,
+        payload=payload,
+        current_user=current_user,
+        client_ip=client_ip,
+    )
+
+
+@router.get("/reviews", response_model=AttendanceReviewHistoryResponse)
+def get_attendance_reviews(
+    employee_id: int = Query(..., gt=0, description="Target employee ID"),
+    date: str | None = Query(default=None, description="Filter by attendance date (YYYY-MM-DD)"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max review history rows"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve historical review actions for a specific employee.
+
+    - MANAGER: Authorized only for employees within manager's linked department team.
+    - ADMIN: Organization-wide review history visibility.
+    - EMPLOYEE: Forbidden (HTTP 403).
+    """
+    return AttendanceService.get_attendance_reviews(
+        db=db,
+        current_user=current_user,
+        employee_id=employee_id,
+        attendance_date=date,
+        limit=limit,
+        offset=offset,
     )

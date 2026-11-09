@@ -125,13 +125,32 @@ class EmployeeService:
             raise
 
     @staticmethod
-    def list_employees(db: Session) -> list[Employee]:
-        # Exclude soft-deleted employees
+    def list_employees(
+        db: Session,
+        status_filter: str | None = None,
+        current_user: User | None = None,
+    ) -> list[Employee]:
+        query = select(Employee)
+
+        norm_status = status_filter.strip().upper() if status_filter else "ACTIVE"
+
+        if norm_status in ("INACTIVE", "ALL"):
+            if current_user and current_user.role != "ADMIN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only administrators can query inactive employees.",
+                )
+            if norm_status == "INACTIVE":
+                query = query.where(
+                    (Employee.deleted_at.is_not(None)) | (Employee.is_active.is_(False))
+                )
+        else:
+            # Default to active (non-deleted)
+            query = query.where(Employee.deleted_at.is_(None))
+
         return list(
             db.scalars(
-                select(Employee)
-                .where(Employee.deleted_at.is_(None))
-                .order_by(Employee.id)
+                query.order_by(Employee.id)
             ).all()
         )
 
@@ -140,6 +159,7 @@ class EmployeeService:
         db: Session,
         employee_id: int,
         current_user: User,
+        include_deleted: bool = False,
     ) -> Employee:
         if current_user.role == "EMPLOYEE":
             if current_user.employee_id is None:
@@ -153,13 +173,11 @@ class EmployeeService:
                     detail="Access forbidden: You may only view your own employee record.",
                 )
 
-        # Exclude soft-deleted employees
-        employee = db.scalar(
-            select(Employee).where(
-                Employee.id == employee_id,
-                Employee.deleted_at.is_(None),
-            )
-        )
+        query = select(Employee).where(Employee.id == employee_id)
+        if not (include_deleted and current_user.role == "ADMIN"):
+            query = query.where(Employee.deleted_at.is_(None))
+
+        employee = db.scalar(query)
         if employee is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -316,6 +334,62 @@ class EmployeeService:
             db.add(audit)
 
             db.commit()
+        except IntegrityError as exc:
+            _handle_integrity_error(exc, db)
+        except Exception:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def reactivate_employee(
+        db: Session,
+        employee_id: int,
+        current_user: User,
+    ) -> Employee:
+        if current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can reactivate employees.",
+            )
+
+        employee = db.scalar(
+            select(Employee).where(
+                Employee.id == employee_id,
+            )
+        )
+        if employee is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Employee not found",
+            )
+
+        if employee.is_active is True and employee.deleted_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Employee is already active.",
+            )
+
+        employee.is_active = True
+        employee.deleted_at = None
+        employee.updated_at = func.now()
+
+        try:
+            audit = AuditLog(
+                actor_user_id=current_user.id,
+                action="EMPLOYEE_REACTIVATE",
+                target_type="employee",
+                target_id=str(employee.id),
+                ip_address=None,
+                metadata_={
+                    "employee_code": employee.employee_code,
+                    "role": current_user.role,
+                },
+            )
+            db.add(audit)
+
+            db.commit()
+            db.refresh(employee)
+            return employee
         except IntegrityError as exc:
             _handle_integrity_error(exc, db)
         except Exception:

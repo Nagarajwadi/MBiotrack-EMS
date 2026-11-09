@@ -1,10 +1,24 @@
 import React from 'react';
 import type { User } from '../types/auth';
-import { canViewDirectory, canViewManagement, canViewOwnProfile } from '../utils/permissions';
+import {
+  canManageUsers,
+  canViewDirectory,
+  canViewManagement,
+  canViewOwnProfile,
+  canViewTeamAttendance,
+} from '../utils/permissions';
 import './components.css';
 
 export type BackendStatus = 'checking' | 'online' | 'offline';
-export type ActiveView = 'directory' | 'profile' | 'attendance' | 'management' | 'leaves';
+export type ActiveView =
+  | 'directory'
+  | 'profile'
+  | 'attendance'
+  | 'management'
+  | 'leaves'
+  | 'dashboard'
+  | 'team-attendance'
+  | 'users';
 
 export interface HeaderProps {
   status: BackendStatus;
@@ -51,8 +65,10 @@ export const Header: React.FC<HeaderProps> = ({
   const hasDirectoryAccess = user ? canViewDirectory(user.role) : false;
   const hasProfileAccess = user ? canViewOwnProfile(user) : false;
   const hasManagementAccess = user ? canViewManagement(user.role) : false;
+  const hasTeamAttendanceAccess = user ? canViewTeamAttendance(user.role) : false;
+  const hasUserManagementAccess = user ? canManageUsers(user.role) : false;
   const isAdmin = user?.role === 'ADMIN';
-  const showNavTabs = user && (isAdmin || (hasDirectoryAccess && hasProfileAccess));
+  const showNavTabs = user && (isAdmin || hasDirectoryAccess);
 
   return (
     <header className="mbiotrack-header" role="banner">
@@ -79,6 +95,16 @@ export const Header: React.FC<HeaderProps> = ({
                 Employee Directory
               </button>
             )}
+            {hasTeamAttendanceAccess && (
+              <button
+                type="button"
+                className={`nav-tab-btn ${activeView === 'team-attendance' ? 'active' : ''}`}
+                onClick={() => onNavigate && onNavigate('team-attendance')}
+                aria-current={activeView === 'team-attendance' ? 'page' : undefined}
+              >
+                Team Attendance
+              </button>
+            )}
             <button
               type="button"
               className={`nav-tab-btn ${activeView === 'attendance' ? 'active' : ''}`}
@@ -103,6 +129,16 @@ export const Header: React.FC<HeaderProps> = ({
                 aria-current={activeView === 'management' ? 'page' : undefined}
               >
                 Offices & Devices
+              </button>
+            )}
+            {hasUserManagementAccess && (
+              <button
+                type="button"
+                className={`nav-tab-btn ${activeView === 'users' ? 'active' : ''}`}
+                onClick={() => onNavigate && onNavigate('users')}
+                aria-current={activeView === 'users' ? 'page' : undefined}
+              >
+                User Accounts
               </button>
             )}
             {hasProfileAccess && (

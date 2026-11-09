@@ -73,6 +73,7 @@ describe('leaveApi and holidayApi clients', () => {
 
     await getLeaveRequests({
       employee_id: 5,
+      department: 'Engineering',
       status: 'PENDING',
       leave_type: 'SICK',
       limit: 25,
@@ -83,6 +84,7 @@ describe('leaveApi and holidayApi clients', () => {
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('/api/v1/leaves?');
     expect(url).toContain('employee_id=5');
+    expect(url).toContain('department=Engineering');
     expect(url).toContain('status=PENDING');
     expect(url).toContain('leave_type=SICK');
   });

@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as attendanceApi from '../api/attendanceApi';
+import * as deviceApi from '../api/deviceApi';
 import {
   mockAdminUser,
   mockEmployeeUser,
@@ -235,6 +236,22 @@ describe('AttendanceView component', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(deviceApi, 'getDevices').mockResolvedValue([
+      {
+        id: 1,
+        office_id: 1,
+        name: 'HQ Turnstile',
+        device_code: 'DEV-HQ',
+        serial_number: 'SN-001',
+        model_name: 'BioStation 3',
+        ip_address: '192.168.1.100',
+        mac_address: '00:11:22:33:44:55',
+        status: 'ACTIVE',
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
   });
 
   // =========================================================================
@@ -270,6 +287,115 @@ describe('AttendanceView component', () => {
       expect(
         screen.getByRole('heading', { level: 2, name: 'Organization Daily Attendance Operations' })
       ).toBeInTheDocument();
+    });
+
+    it('renders employee subnav tabs and handles navigation to profile and leaves', async () => {
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
+      const mockNavigateProfile = vi.fn();
+      const mockNavigateLeaves = vi.fn();
+
+      render(
+        <AttendanceView
+          currentUser={mockEmployeeUser}
+          sessionEpoch={1}
+          onNavigateToProfile={mockNavigateProfile}
+          onNavigateToLeaves={mockNavigateLeaves}
+        />
+      );
+
+      const subnav = screen.getByRole('tablist', { name: /employee navigation/i });
+      expect(subnav).toBeInTheDocument();
+
+      const profileTab = screen.getByRole('tab', { name: /my profile/i });
+      const attendanceTab = screen.getByRole('tab', { name: /my attendance/i });
+      const leavesTab = screen.getByRole('tab', { name: /leaves & holidays/i });
+
+      expect(profileTab).toHaveAttribute('aria-selected', 'false');
+      expect(attendanceTab).toHaveAttribute('aria-selected', 'true');
+      expect(leavesTab).toHaveAttribute('aria-selected', 'false');
+
+      const user = userEvent.setup();
+      await user.click(leavesTab);
+      expect(mockNavigateLeaves).toHaveBeenCalledTimes(1);
+
+      await user.click(profileTab);
+      expect(mockNavigateProfile).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders Quick-Punch status card and handles Check In submission', async () => {
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
+      const mockRecordPunch = vi.spyOn(attendanceApi, 'recordAttendancePunch').mockResolvedValue({
+        id: 201,
+        employee_id: 3,
+        device_id: 1,
+        office_id: 1,
+        punch_type: 'CHECK_IN',
+        event_timestamp: '2026-11-10T08:30:00Z',
+        is_roaming: false,
+        idempotency_key: 'key-201',
+        actor_user_id: 3,
+        created_at: '2026-11-10T08:30:00Z',
+        notes: null,
+      });
+
+      const user = userEvent.setup();
+      render(<AttendanceView currentUser={mockEmployeeUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('punch-status-card')).toBeInTheDocument();
+      });
+
+      // Employee 3 has no punches initially: recommendedAction is CHECK_IN
+      const checkInBtn = screen.getByRole('button', { name: /🟢 check in/i });
+      expect(checkInBtn).toBeInTheDocument();
+
+      // Click Check In opens PunchModal
+      await user.click(checkInBtn);
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /check in confirmation/i })).toBeInTheDocument();
+
+      // Submit punch in modal
+      const confirmBtn = screen.getByRole('button', { name: /confirm check in/i });
+      await user.click(confirmBtn);
+
+      await waitFor(() => {
+        expect(mockRecordPunch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            device_id: 1,
+            punch_type: 'CHECK_IN',
+          })
+        );
+      });
+
+      // Success notification displayed
+      await waitFor(() => {
+        expect(screen.getByText(/check in recorded successfully/i)).toBeInTheDocument();
+      });
+    });
+
+    it('displays Checked In state and Check Out button when last punch is CHECK_IN', async () => {
+      // Mock employee with CHECK_IN as last punch
+      const checkedInOps: DailyAttendanceOperationsResponse = {
+        ...sampleDailyOpsResponse,
+        employees: [
+          {
+            ...sampleDailyOpsResponse.employees[1], // Bob Roamer (last punch CHECK_IN)
+            employee_id: mockEmployeeUser.employee_id!,
+          },
+        ],
+      };
+
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(checkedInOps);
+
+      render(<AttendanceView currentUser={mockEmployeeUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('punch-status-card')).toBeInTheDocument();
+      });
+
+      expect(screen.getByText(/currently checked in/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /🔴 check out/i })).toBeInTheDocument();
     });
 
     it('renders daily summary cards with correct metrics and neutral "No punch recorded" label', async () => {

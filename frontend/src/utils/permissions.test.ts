@@ -11,6 +11,8 @@ import {
   canViewDirectory,
   canViewManagement,
   canViewOwnProfile,
+  canViewTeamAttendance,
+  canManageUsers,
 } from './permissions';
 
 import {
@@ -163,6 +165,20 @@ describe('permissions utilities', () => {
       expect(canViewManagement('ADMIN')).toBe(true);
       expect(canViewManagement('MANAGER')).toBe(true);
       expect(canViewManagement('EMPLOYEE')).toBe(false);
+    });
+
+    it('canViewTeamAttendance permits ADMIN and MANAGER but strictly forbids EMPLOYEE', () => {
+      expect(canViewTeamAttendance('ADMIN')).toBe(true);
+      expect(canViewTeamAttendance('MANAGER')).toBe(true);
+      expect(canViewTeamAttendance('EMPLOYEE')).toBe(false);
+      expect(canViewTeamAttendance(undefined)).toBe(false);
+    });
+
+    it('canManageUsers permits only ADMIN', () => {
+      expect(canManageUsers('ADMIN')).toBe(true);
+      expect(canManageUsers('MANAGER')).toBe(false);
+      expect(canManageUsers('EMPLOYEE')).toBe(false);
+      expect(canManageUsers(undefined)).toBe(false);
     });
   });
 });

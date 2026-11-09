@@ -49,7 +49,7 @@ In production, MBiotrack-EMS operates behind an external HTTPS reverse proxy tha
 | Component | Repository Status | Operational Responsibility |
 |---|---|---|
 | **FastAPI Backend Application** | Implemented & verified | Python runtime & environment configuration |
-| **Database Migrations (Alembic)** | Implemented (`0001` through `0007`) | Execute `alembic upgrade head` on production DB |
+| **Database Migrations (Alembic)** | Implemented (`0001` through `0008_attendance_reviews`) | Execute `alembic upgrade head` on production DB |
 | **React Single-Page Application** | Implemented & verified | Compile via `npm run build` and serve `dist/` |
 | **Reverse Proxy (Nginx / Caddy)** | Not yet provisioned | Provision host, configure TLS and routing rules |
 | **PostgreSQL Database Server** | Local dev verified | Provision production database with TLS and automated backups |
@@ -115,6 +115,10 @@ Always verify current revision status prior to migration:
 ```bash
 alembic current
 ```
+
+> [!IMPORTANT]
+> **Migration 0008 Deployment Prerequisite:**
+> The V1 MVP application imports the `AttendanceReview` model and queries the `attendance_reviews` table. Migration `0008_attendance_reviews` must be applied to the database before or concurrently with deploying the V1 application code to avoid runtime HTTP 500 errors on attendance exception reviews. Because migration 0008 is purely additive, it can safely be applied while older code is still running.
 
 ### 4. Backup & Restore Planning
 - Automated daily backups must be scheduled via `pg_dump` with custom directory format:
@@ -281,19 +285,74 @@ Before directing live user traffic to MBiotrack-EMS, verify each checklist item:
 
 MBiotrack-EMS Version 1 is a device-neutral workforce and attendance operations platform.
 
-**Implemented in Version 1:**
-- Slices 1–9 are fully implemented and verified:
-  - Office domain and employee assignments.
-  - Biometric device registry and status lifecycle.
-  - Append-only audit trail with structured telemetry metadata.
-  - Normalized attendance ingestion (`POST /api/v1/attendance/punch`) and roaming detection.
-  - Employee and manager attendance history interfaces.
-  - Administration UI for offices, devices, and employee office assignments.
-  - Daily Attendance Operations view with punch inspection.
-  - Attendance date-range reporting and CSV export with formula injection protection.
-  - Leave management with row-locking concurrency protection and holiday calendar.
+**Implemented in Version 1 (MVP Baseline):**
+- **Employee Directory & Lifecycle**: Staff profile management with atomic soft-deactivation (`deleted_at`, `is_active=False`) and administrator reactivation.
+- **Admin User Account Management**: Administrator provisioning of login credentials (`/api/v1/users`) for active employees with role restriction (`EMPLOYEE`, `MANAGER`), enable/disable status controls, and self-disable protection.
+- **Password Management & Credential Reset**: Self-service password change (`/api/v1/auth/change-password`), administrator password reset (`/api/v1/users/{id}/reset-password`), mandatory `pwd` password fingerprint claim in JWTs, and immediate session revocation.
+- **Office Domain & Assignments**: Multi-office location management with effective date-ranged employee assignments and overlap prevention.
+- **Biometric Device Registry**: Hardware-neutral device terminal registry with status lifecycles (`ACTIVE`, `INACTIVE`, `DECOMMISSIONED`) and IP tracking.
+- **Normalized Attendance Ingestion**: Real-time punch ingestion (`POST /api/v1/attendance/punch`), out-of-assignment roaming detection, natural duplicate punch rejection, and telemetry metadata logging.
+- **Attendance Operations & Exception Reviews**: Real-time daily operations overview, punch inspection drilldown, and manager/admin attendance acknowledgment reviews (`attendance_reviews` table).
+- **Manager Team Views**: Department-scoped team attendance and team leave review interfaces with backend cross-department isolation.
+- **Employee Dashboard & Self-Service**: Employee dashboard with self-service punch modal, personal punch history, and profile updates.
+- **Leave Management & Holiday Calendar**: Concurrency-safe leave requests with row locking (`SELECT FOR UPDATE`), multi-status workflow (`PENDING`, `APPROVED`, `REJECTED`, `CANCELLED`), and organization/office holidays with `ON DELETE RESTRICT`.
+- **Audit Trail & CSV Export**: Append-only, database-level immutable audit logging with structured JSONB telemetry, and formula-injection neutralized attendance CSV export.
 
 **Deferred to Future Milestones:**
 - Physical biometric hardware integration (vendor-specific SDKs, fingerprint/facial recognition drivers, and proprietary communication protocols).
 - Biometric template enrollment and edge matching.
+
+---
+
+## I. Day-1 Administrator Onboarding Runbook
+
+This operational runbook details the required sequential steps for an administrator setting up a new organization in MBiotrack-EMS using the existing web interface.
+
+### Step 1: Initial Administrator Sign-In
+1. Navigate to the application root URL in a modern web browser.
+2. Sign in using the credentials established during Day-0 bootstrap (`python -m app.cli.create_admin --production`).
+3. Confirm access to the top navigation tabs: `Directory`, `Attendance`, `Team Attendance`, `Leaves & Holidays`, `Offices & Devices`, `User Accounts`, and `Audit Trail`.
+
+### Step 2: Configure Office Locations
+1. Click **Offices & Devices** in the navigation bar.
+2. Under the **Offices** section, click **+ Add Office**.
+3. Enter the office code (e.g., `HQ-MAIN`), office name, address, valid IANA timezone (e.g., `UTC` or `America/New_York`), and active status.
+4. Save the office record.
+
+### Step 3: Register Attendance Terminals
+1. Under **Offices & Devices**, navigate to the **Device Registry** section.
+2. Click **+ Add Device**.
+3. Enter the terminal identifier / serial number, select the bound office location created in Step 2, specify the IP address or hostname, and set the status to `ACTIVE`.
+
+### Step 4: Add Employee Staff Records
+1. Click **Directory** in the navigation bar.
+2. Click **+ Add Employee**.
+3. Fill in the employee code (e.g., `EMP001`), first name, last name, official email address, department (e.g., `Engineering`), designation, and joining date.
+4. Set status to `Active` and submit.
+
+### Step 5: Assign Employees to Office Locations
+1. In **Offices & Devices**, navigate to **Employee Assignments**.
+2. Click **+ Assign Employee**.
+3. Select the employee, select the target office location, specify the effective start date (and optional end date), and designate whether this is their primary office assignment.
+4. Confirm creation.
+
+### Step 6: Provision User Login Accounts
+1. Click **User Accounts** in the navigation bar.
+2. Click **+ Create User Account**.
+3. Select the employee created in Step 4 from the dropdown (only active employees without an existing user account will appear).
+4. Select the appropriate role:
+   - `EMPLOYEE`: Access to personal dashboard, punch modal, attendance history, leave requests, and personal profile.
+   - `MANAGER`: All employee capabilities, plus department-scoped Team Attendance and Team Leave review controls (scoped automatically to the employee's department).
+5. Specify an initial temporary password meeting the minimum 8-character complexity standard.
+6. Submit to create the account.
+
+### Step 7: Secure Temporary Password Distribution & Mandatory First-Login Password Change
+1. Securely deliver the initial temporary credentials to the employee via an out-of-band communication channel (e.g., in person or via encrypted messaging).
+2. The employee signs in with the temporary credentials.
+3. The employee navigates to **My Profile** in the top navigation and clicks **Change Password**.
+4. The employee enters the temporary password as `Current Password` and sets their confidential `New Password` (minimum 8 characters).
+5. Upon successful change:
+   - The backend immediately updates the Argon2id hash and invalidates all pre-existing JWT tokens via the `pwd` fingerprint claim.
+   - The frontend automatically logs the user out and redirects to the login screen with a confirmation banner: *"Password updated successfully. Please log in with your new credentials."*
+6. The employee logs in with their new credentials. Day-1 onboarding is complete.
 

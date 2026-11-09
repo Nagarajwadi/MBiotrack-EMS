@@ -26,6 +26,11 @@ export interface LogoutResponse {
   message: string;
 }
 
+export interface PasswordChangePayload {
+  current_password: string;
+  new_password: string;
+}
+
 export type AuthStatus = 'unauthenticated' | 'authenticating' | 'authenticated';
 
 export interface AuthContextValue {

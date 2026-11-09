@@ -12,6 +12,7 @@ from app.api.employees import router as employees_router
 from app.api.holidays import router as holidays_router
 from app.api.leaves import router as leaves_router
 from app.api.offices import router as offices_router
+from app.api.users import router as users_router
 from app.core.config import get_settings
 from app.db.session import get_db
 
@@ -46,6 +47,7 @@ app.include_router(devices_router)
 app.include_router(attendance_router)
 app.include_router(leaves_router)
 app.include_router(holidays_router)
+app.include_router(users_router)
 
 
 @app.get("/health", tags=["Health"])

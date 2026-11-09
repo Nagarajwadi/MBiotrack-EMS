@@ -8,7 +8,10 @@ export interface Employee {
   designation: string;
   joining_date: string; // ISO date format YYYY-MM-DD
   is_active: boolean;
+  deleted_at?: string | null;
 }
+
+export type EmployeeStatusFilter = 'ACTIVE' | 'INACTIVE' | 'ALL';
 
 export interface EmployeeCreatePayload {
   employee_code: string;

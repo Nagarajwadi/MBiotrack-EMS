@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import * as employeeApi from './api/employeeApi';
+import * as authApi from './api/authApi';
 import { renderWithAuth } from './test/renderUtils';
 import {
   mockAdminUser,
@@ -25,6 +26,7 @@ vi.mock('./api/employeeApi', () => ({
   createEmployee: vi.fn(),
   updateEmployee: vi.fn(),
   deleteEmployee: vi.fn(),
+  reactivateEmployee: vi.fn(),
 }));
 
 describe('App component role-based access & directory UI', () => {
@@ -268,6 +270,75 @@ describe('App component role-based access & directory UI', () => {
       // Clear filter button
       await user.click(screen.getByRole('button', { name: /clear filters/i }));
       expect(screen.getByText(mockEmployee1.employee_code)).toBeInTheDocument();
+    });
+
+    it('allows ADMIN to filter by status and reactivate an inactive employee', async () => {
+      vi.mocked(employeeApi.getEmployees).mockResolvedValue(mockEmployeesList);
+      vi.mocked(employeeApi.reactivateEmployee).mockResolvedValueOnce({
+        ...mockEmployee2,
+        is_active: true,
+      });
+      const user = userEvent.setup();
+
+      renderWithAuth(<App />, { user: mockAdminUser });
+
+      expect(await screen.findByText(mockEmployee2.employee_code)).toBeInTheDocument();
+
+      // Check status filter exists for Admin
+      const statusFilter = screen.getByTestId('employee-status-filter');
+      expect(statusFilter).toBeInTheDocument();
+
+      // Find reactivate button on Employee 2 row
+      const reactivateBtn = screen.getByRole('button', {
+        name: new RegExp(`reactivate ${mockEmployee2.first_name}`, 'i'),
+      });
+      expect(reactivateBtn).toBeInTheDocument();
+
+      await user.click(reactivateBtn);
+
+      // Verify Reactivate confirmation modal opens
+      expect(screen.getByRole('heading', { level: 2, name: /confirm reactivation/i })).toBeInTheDocument();
+
+      // Confirm reactivation
+      const confirmBtn = screen.getByTestId('confirm-reactivate-btn');
+      await user.click(confirmBtn);
+
+      await waitFor(() => {
+        expect(employeeApi.reactivateEmployee).toHaveBeenCalledWith(mockEmployee2.id);
+      });
+    });
+
+    it('triggers logout and displays notification on successful self-service password change', async () => {
+      vi.mocked(employeeApi.getEmployee).mockResolvedValue(mockEmployee1);
+      const mockLogout = vi.fn().mockResolvedValue(undefined);
+      const user = userEvent.setup();
+
+      renderWithAuth(<App />, {
+        user: mockEmployeeUser,
+        authValue: { logout: mockLogout },
+      });
+
+      // Employee profile view is displayed
+      expect(await screen.findByRole('heading', { level: 2, name: /Jane Doe/i })).toBeInTheDocument();
+
+      // Open change password modal
+      await user.click(screen.getByRole('button', { name: /change password/i }));
+      expect(await screen.findByRole('dialog', { name: /change password/i })).toBeInTheDocument();
+
+      // Mock changePassword API
+      vi.spyOn(authApi, 'changePassword').mockResolvedValueOnce({
+        message: 'Password changed successfully.',
+      });
+
+      await user.type(screen.getByLabelText(/Current Password/i), 'OldPass123456!');
+      await user.type(screen.getByLabelText(/^New Password/i), 'NewValidPass123456!');
+      await user.type(screen.getByLabelText(/Confirm New Password/i), 'NewValidPass123456!');
+
+      await user.click(screen.getByRole('button', { name: /Update Password/i }));
+
+      await waitFor(() => {
+        expect(mockLogout).toHaveBeenCalled();
+      });
     });
   });
 });

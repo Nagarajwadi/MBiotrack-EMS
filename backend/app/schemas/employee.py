@@ -1,4 +1,4 @@
-﻿from datetime import date
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -35,3 +35,4 @@ class EmployeeResponse(BaseModel):
     designation: str
     joining_date: date
     is_active: bool
+    deleted_at: datetime | None = None

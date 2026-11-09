@@ -2,6 +2,7 @@ export { Header, type HeaderProps, type BackendStatus, type ActiveView } from '.
 export { EmployeeTable, type EmployeeTableProps } from './EmployeeTable';
 export { EmployeeModal, type EmployeeModalProps } from './EmployeeModal';
 export { DeleteModal, type DeleteModalProps } from './DeleteModal';
+export { ReactivateModal, type ReactivateModalProps } from './ReactivateModal';
 export { LoginForm, type LoginFormProps } from './LoginForm';
 export { EmployeeProfileView, type EmployeeProfileViewProps } from './EmployeeProfileView';
 export { ProfileEditModal, type ProfileEditModalProps } from './ProfileEditModal';
@@ -14,3 +15,10 @@ export { AssignmentModal, type AssignmentModalProps } from './AssignmentModal';
 export { LeaveModal, type LeaveModalProps } from './LeaveModal';
 export { HolidayModal, type HolidayModalProps } from './HolidayModal';
 export { LeaveAndHolidayView, type LeaveAndHolidayViewProps } from './LeaveAndHolidayView';
+export { PunchModal, type PunchModalProps } from './PunchModal';
+export { EmployeeDashboardView, type EmployeeDashboardViewProps } from './EmployeeDashboardView';
+export { ManagerTeamAttendanceView, type ManagerTeamAttendanceViewProps } from './ManagerTeamAttendanceView';
+export { UserCreateModal, type UserCreateModalProps } from './UserCreateModal';
+export { UserManagementView, type UserManagementViewProps } from './UserManagementView';
+export { ChangePasswordModal, type ChangePasswordModalProps } from './ChangePasswordModal';
+export { ResetPasswordModal, type ResetPasswordModalProps } from './ResetPasswordModal';

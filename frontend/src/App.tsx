@@ -4,6 +4,7 @@ import {
   deleteEmployee,
   getEmployees,
   getHealth,
+  reactivateEmployee,
   updateEmployee,
 } from './api/employeeApi';
 import {
@@ -12,6 +13,7 @@ import {
   AttendanceView,
   AuditLogModal,
   DeleteModal,
+  EmployeeDashboardView,
   EmployeeModal,
   EmployeeProfileView,
   EmployeeTable,
@@ -19,21 +21,28 @@ import {
   LeaveAndHolidayView,
   LoginForm,
   ManagementView,
+  ManagerTeamAttendanceView,
+  ReactivateModal,
+  UserManagementView,
 } from './components';
 import { useAuth } from './context/useAuth';
 import {
   ApiError,
   type Employee,
   type EmployeeCreatePayload,
+  type EmployeeStatusFilter,
   type EmployeeUpdatePayload,
 } from './types/employee';
 import {
   canCreateEmployee,
   canDeactivateEmployee,
+  canManageUsers,
+  canReactivateEmployee,
   canViewAuditTrail,
   canViewDirectory,
   canViewManagement,
   canViewOwnProfile,
+  canViewTeamAttendance,
 } from './utils/permissions';
 
 import './components/components.css';
@@ -59,19 +68,29 @@ function App() {
   const hasDirectoryAccess = canViewDirectory(user?.role);
   const hasProfileAccess = canViewOwnProfile(user);
   const hasManagementAccess = canViewManagement(user?.role);
+  const hasTeamAttendanceAccess = canViewTeamAttendance(user?.role);
+  const hasUserManagementAccess = canManageUsers(user?.role);
 
   // Determine effective view based on permissions and preference
   let activeView: ActiveView = 'directory';
   if (!hasDirectoryAccess) {
-    if (viewPreference === 'leaves') {
+    if (viewPreference === 'dashboard') {
+      activeView = 'dashboard';
+    } else if (viewPreference === 'leaves') {
       activeView = 'leaves';
     } else if (viewPreference === 'attendance') {
       activeView = 'attendance';
     } else {
       activeView = 'profile';
     }
+  } else if (viewPreference === 'team-attendance' && hasTeamAttendanceAccess) {
+    activeView = 'team-attendance';
+  } else if (viewPreference === 'dashboard') {
+    activeView = 'dashboard';
   } else if (viewPreference === 'management' && hasManagementAccess) {
     activeView = 'management';
+  } else if (viewPreference === 'users' && hasUserManagementAccess) {
+    activeView = 'users';
   } else if (viewPreference === 'leaves') {
     activeView = 'leaves';
   } else if (!hasProfileAccess) {
@@ -97,6 +116,7 @@ function App() {
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [departmentFilter, setDepartmentFilter] = useState<string>('ALL');
+  const [employeeStatusFilter, setEmployeeStatusFilter] = useState<EmployeeStatusFilter>('ALL');
 
   // Employee modal state (Create / Edit)
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState<boolean>(false);
@@ -109,6 +129,11 @@ function App() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
   const [deletingEmployee, setDeletingEmployee] = useState<Employee | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // Reactivate modal state
+  const [isReactivateModalOpen, setIsReactivateModalOpen] = useState<boolean>(false);
+  const [reactivatingEmployee, setReactivatingEmployee] = useState<Employee | null>(null);
+  const [isReactivating, setIsReactivating] = useState<boolean>(false);
 
   // Compliance audit trail modal state (ADMIN only)
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false);
@@ -141,7 +166,7 @@ function App() {
 
   // Fetch employees list from API with strict sessionEpoch protection (for manual refresh)
   const fetchEmployees = useCallback(
-    async (isSilent = false): Promise<boolean> => {
+    async (isSilent = false, statusOverride?: EmployeeStatusFilter): Promise<boolean> => {
       if (!canViewDirectory(user?.role)) {
         return false;
       }
@@ -149,7 +174,8 @@ function App() {
       setIsLoading(true);
 
       try {
-        const data = await getEmployees();
+        const queryStatus = statusOverride ?? (user?.role === 'ADMIN' ? employeeStatusFilter : undefined);
+        const data = await getEmployees(queryStatus);
 
         // Discard response if session epoch changed or user logged out
         if (requestEpoch !== sessionEpochRef.current || !isAuthenticatedRef.current) {
@@ -186,7 +212,7 @@ function App() {
         }
       }
     },
-    [user?.role]
+    [user, employeeStatusFilter]
   );
 
   // Backend health check polling (always unauthenticated) with recovery reload
@@ -231,14 +257,14 @@ function App() {
     };
   }, [fetchEmployees, user?.role]);
 
-  // Load employee directory whenever user transitions to authenticated
+  // Load employee directory whenever user transitions to authenticated or status filter changes
   useEffect(() => {
     if (!isAuthenticated || !canViewDirectory(user?.role)) {
       return;
     }
 
     let isMounted = true;
-    getEmployees()
+    getEmployees(user?.role === 'ADMIN' ? employeeStatusFilter : undefined)
       .then((data) => {
         if (isMounted && sessionEpochRef.current === sessionEpoch) {
           setEmployees(data);
@@ -261,7 +287,7 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated, user?.role, sessionEpoch]);
+  }, [isAuthenticated, user?.role, sessionEpoch, employeeStatusFilter]);
 
   // Unique sorted list of departments for dropdown filter
   const departments = useMemo(() => {
@@ -443,6 +469,57 @@ function App() {
     }
   };
 
+  // Open reactivate confirmation modal
+  const handleOpenReactivateModal = (employee: Employee) => {
+    setReactivatingEmployee(employee);
+    setIsReactivateModalOpen(true);
+  };
+
+  // Close reactivate confirmation modal
+  const handleCloseReactivateModal = () => {
+    if (isReactivating) return;
+    setIsReactivateModalOpen(false);
+    setReactivatingEmployee(null);
+  };
+
+  // Confirm employee reactivation
+  const handleConfirmReactivate = async () => {
+    if (!reactivatingEmployee || isReactivating) return;
+    setIsReactivating(true);
+    const name = `${reactivatingEmployee.first_name} ${reactivatingEmployee.last_name}`;
+    const code = reactivatingEmployee.employee_code;
+    try {
+      await reactivateEmployee(reactivatingEmployee.id);
+      setIsReactivateModalOpen(false);
+      setReactivatingEmployee(null);
+      const refreshOk = await fetchEmployees(true);
+      if (refreshOk) {
+        setFeedback({
+          type: 'success',
+          message: `Employee ${name} (${code}) was reactivated successfully.`,
+        });
+      } else {
+        setFeedback({
+          type: 'error',
+          message: `Employee ${name} (${code}) was reactivated successfully, but the directory could not be refreshed. Please retry.`,
+        });
+      }
+    } catch (err) {
+      setIsReactivateModalOpen(false);
+      setReactivatingEmployee(null);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : `Failed to reactivate employee ${name}.`;
+      setFeedback({
+        type: 'error',
+        message,
+      });
+    } finally {
+      setIsReactivating(false);
+    }
+  };
+
   // Handle user-initiated sign out
   const handleLogout = async () => {
     if (isLoggingOut) return;
@@ -510,6 +587,24 @@ function App() {
           sessionEpoch={sessionEpoch}
           onNavigateToDirectory={() => setViewPreference('directory')}
         />
+      ) : activeView === 'users' && user && hasUserManagementAccess ? (
+        <UserManagementView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+        />
+      ) : activeView === 'dashboard' && user ? (
+        <EmployeeDashboardView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+          onNavigateToAttendance={() => setViewPreference('attendance')}
+          onNavigateToLeaves={() => setViewPreference('leaves')}
+          onNavigateToProfile={
+            hasProfileAccess ? () => setViewPreference('profile') : undefined
+          }
+          onNavigateToDirectory={
+            hasDirectoryAccess ? () => setViewPreference('directory') : undefined
+          }
+        />
       ) : activeView === 'leaves' && user ? (
         <LeaveAndHolidayView
           currentUser={user}
@@ -521,6 +616,17 @@ function App() {
             hasProfileAccess ? () => setViewPreference('profile') : undefined
           }
           onNavigateToAttendance={() => setViewPreference('attendance')}
+          onNavigateToDashboard={() => setViewPreference('dashboard')}
+        />
+      ) : activeView === 'team-attendance' && user ? (
+        <ManagerTeamAttendanceView
+          currentUser={user}
+          sessionEpoch={sessionEpoch}
+          onNavigateToDirectory={
+            hasDirectoryAccess ? () => setViewPreference('directory') : undefined
+          }
+          onNavigateToAttendance={() => setViewPreference('attendance')}
+          onNavigateToLeaves={() => setViewPreference('leaves')}
         />
       ) : activeView === 'attendance' && user ? (
         <AttendanceView
@@ -532,11 +638,22 @@ function App() {
           onNavigateToProfile={
             hasProfileAccess ? () => setViewPreference('profile') : undefined
           }
+          onNavigateToLeaves={() => setViewPreference('leaves')}
+          onNavigateToDashboard={() => setViewPreference('dashboard')}
         />
       ) : activeView === 'profile' ? (
         <main className="dashboard-wrapper">
           {user?.role === 'EMPLOYEE' && (
             <div className="employee-subnav" role="tablist" aria-label="Employee navigation">
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                className="nav-tab-btn"
+                onClick={() => setViewPreference('dashboard')}
+              >
+                📊 Dashboard
+              </button>
               <button
                 type="button"
                 role="tab"
@@ -588,11 +705,19 @@ function App() {
           {user?.employee_id !== null && user?.employee_id !== undefined ? (
             <EmployeeProfileView
               employeeId={user.employee_id}
+              currentUser={user}
               sessionEpoch={sessionEpoch}
               onProfileUpdated={() => {
                 if (canViewDirectory(user?.role)) {
                   void fetchEmployees(true);
                 }
+              }}
+              onPasswordChanged={async () => {
+                await logout();
+                setFeedback({
+                  type: 'success',
+                  message: 'Password updated successfully. Please log in with your new credentials.',
+                });
               }}
             />
           ) : (
@@ -618,6 +743,16 @@ function App() {
               <p>Manage employee records, organizational departments, and account statuses.</p>
             </div>
             <div className="dashboard-actions-group">
+              {hasProfileAccess && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-dashboard"
+                  onClick={() => setViewPreference('dashboard')}
+                  title="View personal employee dashboard"
+                >
+                  📊 My Dashboard
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-secondary btn-attendance"
@@ -750,14 +885,30 @@ function App() {
                 ))}
               </select>
 
-              {(searchQuery || activeDepartmentFilter !== 'ALL') && (
+              {user?.role === 'ADMIN' && (
+                <select
+                  className="filter-select"
+                  value={employeeStatusFilter}
+                  onChange={(e) => setEmployeeStatusFilter(e.target.value as EmployeeStatusFilter)}
+                  aria-label="Filter by employment status"
+                  data-testid="employee-status-filter"
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="ACTIVE">Active Employees</option>
+                  <option value="INACTIVE">Deactivated Employees</option>
+                </select>
+              )}
+
+              {(searchQuery || activeDepartmentFilter !== 'ALL' || (user?.role === 'ADMIN' && employeeStatusFilter !== 'ALL')) && (
                 <button
                   type="button"
                   className="btn-clear-filters"
                   onClick={() => {
                     setSearchQuery('');
                     setDepartmentFilter('ALL');
+                    setEmployeeStatusFilter('ALL');
                   }}
+                  data-testid="clear-employee-filters-btn"
                 >
                   Clear Filters
                 </button>
@@ -785,12 +936,15 @@ function App() {
             isLoading={isLoading}
             totalCount={totalEmployees}
             canDeactivate={canDeactivateEmployee(user?.role)}
+            canReactivate={canReactivateEmployee(user?.role)}
             onClearFilters={() => {
               setSearchQuery('');
               setDepartmentFilter('ALL');
+              setEmployeeStatusFilter('ALL');
             }}
             onEdit={handleOpenEditModal}
             onDelete={handleOpenDeleteModal}
+            onReactivate={handleOpenReactivateModal}
           />
         </main>
       )}
@@ -815,6 +969,14 @@ function App() {
             isDeleting={isDeleting}
             onClose={handleCloseDeleteModal}
             onConfirm={handleConfirmDelete}
+          />
+
+          <ReactivateModal
+            isOpen={isReactivateModalOpen}
+            employee={reactivatingEmployee}
+            isReactivating={isReactivating}
+            onClose={handleCloseReactivateModal}
+            onConfirm={handleConfirmReactivate}
           />
 
           {canViewAuditTrail(user?.role) && (

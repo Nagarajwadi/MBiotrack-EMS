@@ -1,4 +1,5 @@
 from app.models.attendance_event import AttendanceEvent
+from app.models.attendance_review import AttendanceReview
 from app.models.audit_log import AuditLog
 from app.models.base import Base, TimestampMixin
 from app.models.device import Device
@@ -18,6 +19,7 @@ __all__ = [
     "EmployeeOfficeAssignment",
     "Device",
     "AttendanceEvent",
+    "AttendanceReview",
     "LeaveRequest",
     "Holiday",
 ]

@@ -6,7 +6,14 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
-from app.schemas.auth import LoginRequest, LogoutResponse, TokenResponse, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    LogoutResponse,
+    MessageResponse,
+    PasswordChangeRequest,
+    TokenResponse,
+    UserResponse,
+)
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
@@ -157,3 +164,29 @@ def logout(
     Does not claim token revocation since JWTs are stateless.
     """
     return LogoutResponse(message="Logged out successfully. Discard token on client.")
+
+
+@router.post(
+    "/change-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Change current authenticated user password",
+)
+def change_password(
+    payload: PasswordChangeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """Change the authenticated user's password.
+    
+    Verifies current password and updates to new password.
+    Invalidates all prior JWT sessions.
+    """
+    client_ip = get_client_ip(request)
+    return AuthService.change_password(
+        db=db,
+        current_user=current_user,
+        payload=payload,
+        client_ip=client_ip,
+    )

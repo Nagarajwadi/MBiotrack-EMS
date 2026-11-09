@@ -7,6 +7,7 @@ from app.api.employees import router as employees_router
 from app.api.holidays import router as holidays_router
 from app.api.leaves import router as leaves_router
 from app.api.offices import router as offices_router
+from app.api.users import router as users_router
 
 __all__ = [
     "auth_router",
@@ -18,4 +19,5 @@ __all__ = [
     "attendance_router",
     "leaves_router",
     "holidays_router",
+    "users_router",
 ]

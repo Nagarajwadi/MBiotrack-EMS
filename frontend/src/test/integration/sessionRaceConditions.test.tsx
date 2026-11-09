@@ -38,6 +38,7 @@ vi.mock('../../api/employeeApi', () => ({
   createEmployee: vi.fn(),
   updateEmployee: vi.fn(),
   deleteEmployee: vi.fn(),
+  reactivateEmployee: vi.fn(),
 }));
 
 function createDeferred<T>() {

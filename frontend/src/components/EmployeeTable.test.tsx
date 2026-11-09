@@ -133,4 +133,28 @@ describe('EmployeeTable component', () => {
     const deleteBtn = screen.queryByRole('button', { name: new RegExp(`delete ${mockEmployee1.first_name}`, 'i') });
     expect(deleteBtn).not.toBeInTheDocument();
   });
+
+  it('renders Reactivate button for inactive employee when canReactivate is true (ADMIN)', async () => {
+    const user = userEvent.setup();
+    const mockOnReactivate = vi.fn();
+    render(
+      <EmployeeTable
+        employees={[mockEmployee2]} // Inactive employee
+        isLoading={false}
+        canDeactivate={true}
+        canReactivate={true}
+        onEdit={mockOnEdit}
+        onDelete={mockOnDelete}
+        onReactivate={mockOnReactivate}
+      />
+    );
+
+    const reactivateBtn = screen.getByRole('button', {
+      name: new RegExp(`reactivate ${mockEmployee2.first_name}`, 'i'),
+    });
+    expect(reactivateBtn).toBeInTheDocument();
+
+    await user.click(reactivateBtn);
+    expect(mockOnReactivate).toHaveBeenCalledWith(mockEmployee2);
+  });
 });

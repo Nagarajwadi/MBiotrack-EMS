@@ -1,14 +1,15 @@
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import io
 from typing import Any
 from fastapi import HTTPException, status
 from psycopg.types.range import Range
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.attendance_event import AttendanceEvent
+from app.models.attendance_review import AttendanceReview
 from app.models.audit_log import AuditLog
 from app.models.device import Device
 from app.models.employee import Employee
@@ -16,12 +17,17 @@ from app.models.office import EmployeeOfficeAssignment, Office
 from app.models.user import User
 from app.schemas.attendance import (
     AttendanceEventDetail,
+    AttendanceExceptionItem,
+    AttendanceExceptionListResponse,
     AttendanceListResponse,
     AttendancePunchCreate,
     AttendancePunchResponse,
     AttendanceReportItem,
     AttendanceReportResponse,
     AttendanceReportSummary,
+    AttendanceReviewCreate,
+    AttendanceReviewHistoryResponse,
+    AttendanceReviewResponse,
     DailyAttendanceOperationsResponse,
     DailyAttendanceSummary,
     DailyPunchDetail,
@@ -223,6 +229,13 @@ class AttendanceService:
         return response
 
     @staticmethod
+    def _get_attendance_day_boundaries(target_date: date) -> tuple[datetime, datetime]:
+        """Compute authoritative UTC timestamp boundaries for a given calendar date."""
+        dt_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, 0, tzinfo=timezone.utc)
+        dt_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        return dt_start, dt_end
+
+    @staticmethod
     def _parse_filter_datetime(val: datetime | str | None, is_end: bool = False) -> datetime | None:
         if val is None:
             return None
@@ -266,6 +279,7 @@ class AttendanceService:
         is_roaming: bool | None = None,
         limit: int = 50,
         offset: int = 0,
+        scope: str | None = None,
     ) -> AttendanceListResponse:
         """Query paginated attendance events with role-based visibility and practical filters."""
         safe_limit = max(1, min(limit, 100))
@@ -275,25 +289,78 @@ class AttendanceService:
 
         # 1. Role-based visibility enforcement
         target_employee_id: int | None = None
-        if current_user.role == "EMPLOYEE":
-            if current_user.employee_id is None:
+        team_department: str | None = None
+
+        if scope == "team":
+            if current_user.role == "EMPLOYEE":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="User account is not linked to an employee profile.",
+                    detail="Operation not permitted for the current user role.",
                 )
-            if employee_id is not None and employee_id != current_user.employee_id:
+            if current_user.role == "MANAGER":
+                if current_user.employee_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                    )
+                manager_emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == current_user.employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not manager_emp or not manager_emp.department:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Manager has no assigned department team.",
+                    )
+                team_department = manager_emp.department
+
+                if employee_id is not None:
+                    target_emp = db.scalar(
+                        select(Employee).where(
+                            Employee.id == employee_id,
+                            Employee.deleted_at.is_(None),
+                        )
+                    )
+                    if not target_emp:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Employee not found",
+                        )
+                    if target_emp.department != team_department:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Access forbidden: You may only view attendance for employees within your authorized team.",
+                        )
+                    target_employee_id = employee_id
+            elif current_user.role == "ADMIN":
+                target_employee_id = employee_id
+            else:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Employees may only query their own attendance records.",
+                    detail="Unauthorized role for team attendance queries.",
                 )
-            target_employee_id = current_user.employee_id
-        elif current_user.role in ("ADMIN", "MANAGER"):
-            target_employee_id = employee_id
         else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Unauthorized role for attendance queries.",
-            )
+            if current_user.role == "EMPLOYEE":
+                if current_user.employee_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="User account is not linked to an employee profile.",
+                    )
+                if employee_id is not None and employee_id != current_user.employee_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Employees may only query their own attendance records.",
+                    )
+                target_employee_id = current_user.employee_id
+            elif current_user.role in ("ADMIN", "MANAGER"):
+                target_employee_id = employee_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Unauthorized role for attendance queries.",
+                )
 
         # 2. Base query with joins for enriched employee, device, and office attributes
         base_query = (
@@ -312,6 +379,12 @@ class AttendanceService:
             .outerjoin(Office, AttendanceEvent.office_id == Office.id)
         )
         count_query = select(func.count(AttendanceEvent.id))
+
+        if team_department is not None and target_employee_id is None:
+            base_query = base_query.where(Employee.department == team_department)
+            count_query = count_query.join(Employee, AttendanceEvent.employee_id == Employee.id).where(
+                Employee.department == team_department
+            )
 
         if target_employee_id is not None:
             base_query = base_query.where(AttendanceEvent.employee_id == target_employee_id)
@@ -394,6 +467,7 @@ class AttendanceService:
         employee_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
+        scope: str | None = None,
     ) -> DailyAttendanceOperationsResponse:
         """Query Daily Attendance Operations and summary metrics with role-based visibility."""
         safe_limit = max(1, min(limit, 100))
@@ -414,8 +488,7 @@ class AttendanceService:
                     detail=f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD.",
                 )
 
-        dt_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, 0, tzinfo=timezone.utc)
-        dt_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        dt_start, dt_end = AttendanceService._get_attendance_day_boundaries(target_date)
         day_range = Range(dt_start, dt_end, bounds="[]")
 
         # 2. Validate office existence if filtered
@@ -429,25 +502,78 @@ class AttendanceService:
 
         # 3. Role-based scoping
         target_employee_id: int | None = None
-        if current_user.role == "EMPLOYEE":
-            if current_user.employee_id is None:
+        team_department: str | None = None
+
+        if scope == "team":
+            if current_user.role == "EMPLOYEE":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="User account is not linked to an employee profile.",
+                    detail="Operation not permitted for the current user role.",
                 )
-            if employee_id is not None and employee_id != current_user.employee_id:
+            if current_user.role == "MANAGER":
+                if current_user.employee_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                    )
+                manager_emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == current_user.employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not manager_emp or not manager_emp.department:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Manager has no assigned department team.",
+                    )
+                team_department = manager_emp.department
+
+                if employee_id is not None:
+                    target_emp = db.scalar(
+                        select(Employee).where(
+                            Employee.id == employee_id,
+                            Employee.deleted_at.is_(None),
+                        )
+                    )
+                    if not target_emp:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Employee not found",
+                        )
+                    if target_emp.department != team_department:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Access forbidden: You may only view attendance for employees within your authorized team.",
+                        )
+                    target_employee_id = employee_id
+            elif current_user.role == "ADMIN":
+                target_employee_id = employee_id
+            else:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Employees may only query their own attendance records.",
+                    detail="Unauthorized role for team attendance queries.",
                 )
-            target_employee_id = current_user.employee_id
-        elif current_user.role in ("ADMIN", "MANAGER"):
-            target_employee_id = employee_id
         else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Unauthorized role for attendance queries.",
-            )
+            if current_user.role == "EMPLOYEE":
+                if current_user.employee_id is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="User account is not linked to an employee profile.",
+                    )
+                if employee_id is not None and employee_id != current_user.employee_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Employees may only query their own attendance records.",
+                    )
+                target_employee_id = current_user.employee_id
+            elif current_user.role in ("ADMIN", "MANAGER"):
+                target_employee_id = employee_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Unauthorized role for attendance queries.",
+                )
 
         # 4. Fetch all attendance events for the day matching filters
         events_query = (
@@ -471,6 +597,10 @@ class AttendanceService:
 
         if target_employee_id is not None:
             events_query = events_query.where(AttendanceEvent.employee_id == target_employee_id)
+        elif team_department is not None:
+            events_query = events_query.join(Employee, AttendanceEvent.employee_id == Employee.id).where(
+                Employee.department == team_department
+            )
 
         events_query = events_query.order_by(AttendanceEvent.event_timestamp.asc())
         event_rows = db.execute(events_query).all()
@@ -504,6 +634,9 @@ class AttendanceService:
             (Employee.is_active.is_(True) & Employee.deleted_at.is_(None))
             | (Employee.id.in_(list(punches_by_employee.keys())))
         )
+
+        if team_department is not None:
+            emp_query = emp_query.where(Employee.department == team_department)
 
         if target_employee_id is not None:
             emp_query = emp_query.where(Employee.id == target_employee_id)
@@ -540,7 +673,27 @@ class AttendanceService:
             for emp_id, off_id, off_name, off_code in db.execute(assignments_query).all():
                 assigned_offices[emp_id] = (off_id, off_name, off_code)
 
-        # 7. Build employee-wise attendance records and calculate summary counters
+        # 7. Query latest attendance reviews for eligible employees on target date
+        latest_reviews_by_emp: dict[int, AttendanceReview] = {}
+        if eligible_employees:
+            emp_ids = [e.id for e in eligible_employees]
+            reviews_query = (
+                select(AttendanceReview)
+                .where(
+                    AttendanceReview.attendance_date == target_date,
+                    AttendanceReview.employee_id.in_(emp_ids),
+                )
+                .order_by(
+                    AttendanceReview.employee_id,
+                    AttendanceReview.created_at.desc(),
+                    AttendanceReview.id.desc(),
+                )
+            )
+            for rev in db.scalars(reviews_query).all():
+                if rev.employee_id not in latest_reviews_by_emp:
+                    latest_reviews_by_emp[rev.employee_id] = rev
+
+        # 8. Build employee-wise attendance records and calculate summary counters
         employee_items: list[EmployeeDailyAttendanceItem] = []
         employees_with_punches = 0
         employees_without_punches = 0
@@ -555,15 +708,37 @@ class AttendanceService:
             first_punch = emp_punches[0].event_timestamp if punch_count > 0 else None
             last_punch = emp_punches[-1].event_timestamp if punch_count > 0 else None
 
+            # Look up latest review action if present
+            latest_rev = latest_reviews_by_emp.get(emp.id)
+            latest_review_resp = None
+            if latest_rev:
+                latest_review_resp = AttendanceReviewResponse(
+                    id=latest_rev.id,
+                    employee_id=latest_rev.employee_id,
+                    attendance_date=latest_rev.attendance_date,
+                    reviewed_by_user_id=latest_rev.reviewed_by_user_id,
+                    reviewer_name=latest_rev.reviewer.full_name if latest_rev.reviewer else "Manager",
+                    reviewer_email=latest_rev.reviewer.email if latest_rev.reviewer else "",
+                    review_status=latest_rev.review_status,
+                    review_notes=latest_rev.review_notes,
+                    idempotency_key=latest_rev.idempotency_key,
+                    created_at=latest_rev.created_at,
+                )
+
             # Determine attendance review status
             if punch_count == 0:
                 review_status = "NO_PUNCH"
                 review_reason = None
                 employees_without_punches += 1
             elif has_roaming:
-                review_status = "REQUIRES_REVIEW"
-                review_reason = f"Roaming punches recorded ({roaming_count})"
-                requires_review_count += 1
+                if latest_rev and latest_rev.review_status == "ACKNOWLEDGED":
+                    review_status = "ACKNOWLEDGED"
+                    reviewer_display = latest_rev.reviewer.full_name if latest_rev.reviewer else "Manager"
+                    review_reason = f"Roaming punches recorded ({roaming_count}) - Acknowledged by {reviewer_display}"
+                else:
+                    review_status = "REQUIRES_REVIEW"
+                    review_reason = f"Roaming punches recorded ({roaming_count})"
+                    requires_review_count += 1
                 employees_with_punches += 1
             else:
                 review_status = "NORMAL"
@@ -587,12 +762,13 @@ class AttendanceService:
                 roaming_count=roaming_count,
                 review_status=review_status,
                 review_reason=review_reason,
+                latest_review=latest_review_resp,
                 punches=emp_punches,
             )
             employee_items.append(item)
 
-        # 8. Deterministic sort: REQUIRES_REVIEW first, then NORMAL (with punches), then NO_PUNCH
-        status_priority = {"REQUIRES_REVIEW": 0, "NORMAL": 1, "NO_PUNCH": 2}
+        # 9. Deterministic sort: REQUIRES_REVIEW first, then ACKNOWLEDGED, then NORMAL (with punches), then NO_PUNCH
+        status_priority = {"REQUIRES_REVIEW": 0, "ACKNOWLEDGED": 1, "NORMAL": 2, "NO_PUNCH": 3}
         employee_items.sort(key=lambda x: (status_priority.get(x.review_status, 9), x.employee_code))
 
         # 9. Pagination
@@ -988,3 +1164,356 @@ class AttendanceService:
         csv_bytes = output.getvalue().encode("utf-8-sig")
         filename = f"attendance_report_{summary.start_date}_{summary.end_date}.csv"
         return csv_bytes, filename
+
+    @staticmethod
+    def _handle_idempotent_review(
+        existing: AttendanceReview,
+        payload: AttendanceReviewCreate,
+        current_user: User,
+    ) -> AttendanceReviewResponse:
+        """Verify parameter equality on idempotency collision and handle safe replay or conflict rejection."""
+        is_identical = (
+            existing.employee_id == payload.employee_id
+            and existing.attendance_date == payload.attendance_date
+            and existing.review_status == payload.review_status
+            and (existing.review_notes or None) == (payload.review_notes or None)
+            and existing.reviewed_by_user_id == current_user.id
+        )
+        if is_identical:
+            reviewer_name = existing.reviewer.full_name if existing.reviewer else current_user.full_name
+            reviewer_email = existing.reviewer.email if existing.reviewer else current_user.email
+            return AttendanceReviewResponse(
+                id=existing.id,
+                employee_id=existing.employee_id,
+                attendance_date=existing.attendance_date,
+                reviewed_by_user_id=existing.reviewed_by_user_id,
+                reviewer_name=reviewer_name,
+                reviewer_email=reviewer_email,
+                review_status=existing.review_status,
+                review_notes=existing.review_notes,
+                idempotency_key=existing.idempotency_key,
+                created_at=existing.created_at,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key reuse with mismatched parameters",
+        )
+
+    @staticmethod
+    def acknowledge_exception(
+        db: Session,
+        payload: AttendanceReviewCreate,
+        current_user: User,
+        client_ip: str | None = None,
+    ) -> AttendanceReviewResponse:
+        """Submit an auditable manager acknowledgement for an attendance exception."""
+        # 1. Role verification
+        if current_user.role == "EMPLOYEE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for the current user role.",
+            )
+
+        # 2. Manager department authorization check (precedes all queries and writes)
+        target_emp = db.scalar(
+            select(Employee).where(
+                Employee.id == payload.employee_id,
+                Employee.deleted_at.is_(None),
+            )
+        )
+        if not target_emp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Employee not found",
+            )
+
+        manager_dept: str | None = None
+        if current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            manager_dept = manager_emp.department
+            if target_emp.department != manager_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only review attendance for employees within your authorized team.",
+                )
+        elif current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for attendance review operations.",
+            )
+
+        # 3. Verify presence of authoritative roaming punch exception on target attendance date
+        dt_start, dt_end = AttendanceService._get_attendance_day_boundaries(payload.attendance_date)
+        has_roaming_exception = db.scalar(
+            select(
+                exists().where(
+                    AttendanceEvent.employee_id == target_emp.id,
+                    AttendanceEvent.event_timestamp >= dt_start,
+                    AttendanceEvent.event_timestamp <= dt_end,
+                    AttendanceEvent.is_roaming.is_(True),
+                )
+            )
+        )
+        if not has_roaming_exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No eligible attendance exception (such as a roaming punch) found for this employee on the specified date.",
+            )
+
+        # 4. Check for existing identical idempotency key before attempting insert
+        existing = db.scalar(
+            select(AttendanceReview).where(
+                AttendanceReview.idempotency_key == payload.idempotency_key
+            )
+        )
+        if existing:
+            return AttendanceService._handle_idempotent_review(existing, payload, current_user)
+
+        # 5. Atomic insertion of review decision and audit trail log
+        review = AttendanceReview(
+            employee_id=target_emp.id,
+            attendance_date=payload.attendance_date,
+            reviewed_by_user_id=current_user.id,
+            review_status="ACKNOWLEDGED",
+            review_notes=payload.review_notes,
+            idempotency_key=payload.idempotency_key,
+        )
+        db.add(review)
+
+        try:
+            db.flush()
+            # Construct audit log with populated review.id (audit_logs table has immutable trigger preventing UPDATE)
+            audit = AuditLog(
+                actor_user_id=current_user.id,
+                action="ATTENDANCE_EXCEPTION_ACKNOWLEDGED",
+                target_type="attendance_review",
+                target_id=str(review.id),
+                before_state={
+                    "review_status": "REQUIRES_REVIEW",
+                    "has_roaming": True,
+                },
+                after_state={
+                    "review_status": "ACKNOWLEDGED",
+                    "employee_id": target_emp.id,
+                    "attendance_date": payload.attendance_date.isoformat(),
+                    "idempotency_key": payload.idempotency_key,
+                    "review_notes": payload.review_notes,
+                },
+                metadata_={
+                    "client_ip": client_ip,
+                    "department": manager_dept or target_emp.department,
+                },
+                ip_address=client_ip,
+            )
+            db.add(audit)
+            db.commit()
+            db.refresh(review)
+            return AttendanceReviewResponse(
+                id=review.id,
+                employee_id=review.employee_id,
+                attendance_date=review.attendance_date,
+                reviewed_by_user_id=review.reviewed_by_user_id,
+                reviewer_name=current_user.full_name,
+                reviewer_email=current_user.email,
+                review_status=review.review_status,
+                review_notes=review.review_notes,
+                idempotency_key=review.idempotency_key,
+                created_at=review.created_at,
+            )
+        except IntegrityError:
+            # Roll back failed transaction before querying existing record
+            db.rollback()
+            existing_after_conflict = db.scalar(
+                select(AttendanceReview).where(
+                    AttendanceReview.idempotency_key == payload.idempotency_key
+                )
+            )
+            if existing_after_conflict:
+                return AttendanceService._handle_idempotent_review(
+                    existing_after_conflict, payload, current_user
+                )
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def get_attendance_reviews(
+        db: Session,
+        current_user: User,
+        employee_id: int,
+        attendance_date: date | str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> AttendanceReviewHistoryResponse:
+        """Retrieve auditable review history for an employee."""
+        # 1. Role verification
+        if current_user.role == "EMPLOYEE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for the current user role.",
+            )
+
+        # 2. Target employee lookup and department authorization
+        target_emp = db.scalar(
+            select(Employee).where(
+                Employee.id == employee_id,
+                Employee.deleted_at.is_(None),
+            )
+        )
+        if not target_emp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Employee not found",
+            )
+
+        if current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            if target_emp.department != manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only view review history for employees within your authorized team.",
+                )
+        elif current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for attendance review queries.",
+            )
+
+        # 3. Query reviews
+        query = (
+            select(AttendanceReview)
+            .where(AttendanceReview.employee_id == employee_id)
+            .order_by(
+                AttendanceReview.attendance_date.desc(),
+                AttendanceReview.created_at.desc(),
+                AttendanceReview.id.desc(),
+            )
+        )
+        if attendance_date is not None:
+            if isinstance(attendance_date, str):
+                try:
+                    parsed_date = datetime.strptime(attendance_date.strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"Invalid date format: '{attendance_date}'. Expected YYYY-MM-DD.",
+                    )
+            else:
+                parsed_date = attendance_date
+            query = query.where(AttendanceReview.attendance_date == parsed_date)
+
+        total_count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        safe_limit = max(1, min(limit, 100))
+        safe_offset = max(0, offset)
+        reviews = db.scalars(query.offset(safe_offset).limit(safe_limit)).all()
+
+        items = [
+            AttendanceReviewResponse(
+                id=r.id,
+                employee_id=r.employee_id,
+                attendance_date=r.attendance_date,
+                reviewed_by_user_id=r.reviewed_by_user_id,
+                reviewer_name=r.reviewer.full_name if r.reviewer else "Manager",
+                reviewer_email=r.reviewer.email if r.reviewer else "",
+                review_status=r.review_status,
+                review_notes=r.review_notes,
+                idempotency_key=r.idempotency_key,
+                created_at=r.created_at,
+            )
+            for r in reviews
+        ]
+        return AttendanceReviewHistoryResponse(
+            employee_id=employee_id,
+            items=items,
+            total_items=total_count,
+        )
+
+    @staticmethod
+    def get_attendance_exceptions(
+        db: Session,
+        current_user: User,
+        date_str: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> AttendanceExceptionListResponse:
+        """Retrieve list of attendance exceptions scoped to caller's authorization."""
+        if current_user.role == "EMPLOYEE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for the current user role.",
+            )
+        scope = "team" if current_user.role == "MANAGER" else "all"
+        daily_ops = AttendanceService.get_daily_operations(
+            db=db,
+            current_user=current_user,
+            date_str=date_str,
+            limit=1000,
+            offset=0,
+            scope=scope,
+        )
+
+        exception_items: list[AttendanceExceptionItem] = []
+        for emp in daily_ops.employees:
+            if emp.has_roaming:
+                exception_items.append(
+                    AttendanceExceptionItem(
+                        employee_id=emp.employee_id,
+                        employee_code=emp.employee_code,
+                        employee_name=emp.employee_name,
+                        department=emp.department,
+                        assigned_office_id=emp.assigned_office_id,
+                        assigned_office_name=emp.assigned_office_name,
+                        attendance_date=daily_ops.summary.date,
+                        punch_count=emp.punch_count,
+                        first_punch=emp.first_punch,
+                        last_punch=emp.last_punch,
+                        has_roaming=emp.has_roaming,
+                        roaming_count=emp.roaming_count,
+                        review_status=emp.review_status,
+                        review_reason=emp.review_reason,
+                        latest_review=emp.latest_review,
+                        punches=emp.punches,
+                    )
+                )
+
+        total_exceptions = len(exception_items)
+        safe_offset = max(0, offset)
+        safe_limit = max(1, min(limit, 100))
+        paged_items = exception_items[safe_offset : safe_offset + safe_limit]
+
+        return AttendanceExceptionListResponse(
+            date=daily_ops.summary.date,
+            total_exceptions=total_exceptions,
+            items=paged_items,
+        )

@@ -90,3 +90,4 @@ class LeaveRequestListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    department: str | None = None

@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -116,6 +117,61 @@ class DailyPunchDetail(BaseModel):
     is_roaming: bool
 
 
+class AttendanceReviewCreate(BaseModel):
+    """Payload schema for submitting a manager attendance exception review action."""
+
+    employee_id: int = Field(gt=0, description="Target employee ID")
+    attendance_date: date = Field(description="Attendance date of the exception (YYYY-MM-DD)")
+    review_status: Literal["ACKNOWLEDGED"] = Field(
+        default="ACKNOWLEDGED",
+        description="Review action classification (only ACKNOWLEDGED supported in V1)",
+    )
+    review_notes: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Optional notes documenting manager review (max 1000 characters)",
+    )
+    idempotency_key: str = Field(
+        ...,
+        min_length=8,
+        max_length=100,
+        description="Mandatory client-supplied unique key for idempotent retry safety",
+    )
+
+    @field_validator("review_notes")
+    @classmethod
+    def sanitize_notes(cls, v: str | None) -> str | None:
+        if v is not None:
+            s = v.strip()
+            return s if s else None
+        return None
+
+
+class AttendanceReviewResponse(BaseModel):
+    """Response representation of an auditable attendance review decision."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    employee_id: int
+    attendance_date: date
+    reviewed_by_user_id: int
+    reviewer_name: str
+    reviewer_email: str
+    review_status: str
+    review_notes: str | None = None
+    idempotency_key: str
+    created_at: datetime
+
+
+class AttendanceReviewHistoryResponse(BaseModel):
+    """List response envelope for employee attendance review history."""
+
+    employee_id: int
+    items: list[AttendanceReviewResponse]
+    total_items: int
+
+
 class EmployeeDailyAttendanceItem(BaseModel):
     """Employee-wise aggregated attendance item on the selected date."""
 
@@ -134,9 +190,10 @@ class EmployeeDailyAttendanceItem(BaseModel):
     has_roaming: bool = False
     roaming_count: int = Field(ge=0, description="Count of roaming punches on selected date")
     review_status: str = Field(
-        description="Attendance status: 'NO_PUNCH', 'NORMAL', or 'REQUIRES_REVIEW'"
+        description="Attendance status: 'NO_PUNCH', 'NORMAL', 'REQUIRES_REVIEW', or 'ACKNOWLEDGED'"
     )
     review_reason: str | None = None
+    latest_review: AttendanceReviewResponse | None = None
     punches: list[DailyPunchDetail] = []
 
 
@@ -213,3 +270,34 @@ class AttendanceReportResponse(BaseModel):
     total_items: int = Field(ge=0, description="Total report items matching filters")
     limit: int = Field(ge=1, le=100, description="Page size limit")
     offset: int = Field(ge=0, description="Records offset for pagination")
+
+
+class AttendanceExceptionItem(BaseModel):
+    """Summary representation of an attendance exception requiring manager attention."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    employee_id: int
+    employee_code: str
+    employee_name: str
+    department: str | None = None
+    assigned_office_id: int | None = None
+    assigned_office_name: str | None = None
+    attendance_date: str = Field(description="Operational date (YYYY-MM-DD)")
+    punch_count: int = Field(ge=0, description="Number of recorded punches")
+    first_punch: datetime | None = None
+    last_punch: datetime | None = None
+    has_roaming: bool = True
+    roaming_count: int = Field(ge=0, description="Count of roaming punches")
+    review_status: str = Field(description="'REQUIRES_REVIEW' or 'ACKNOWLEDGED'")
+    review_reason: str | None = None
+    latest_review: AttendanceReviewResponse | None = None
+    punches: list[DailyPunchDetail] = []
+
+
+class AttendanceExceptionListResponse(BaseModel):
+    """Response envelope for manager attendance exceptions list."""
+
+    date: str
+    total_exceptions: int
+    items: list[AttendanceExceptionItem]

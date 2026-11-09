@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -29,15 +29,21 @@ def create_employee(
 
 @router.get("", response_model=list[EmployeeResponse])
 def list_employees(
+    status: str | None = Query(default=None, description="Filter by status: ACTIVE (default), INACTIVE, or ALL"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("ADMIN", "MANAGER")),
 ):
-    return EmployeeService.list_employees(db=db)
+    return EmployeeService.list_employees(
+        db=db,
+        status_filter=status,
+        current_user=current_user,
+    )
 
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)
 def get_employee(
     employee_id: int,
+    include_deleted: bool = Query(default=False, description="Whether to include soft-deleted employee (ADMIN only)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -45,6 +51,7 @@ def get_employee(
         db=db,
         employee_id=employee_id,
         current_user=current_user,
+        include_deleted=include_deleted,
     )
 
 
@@ -59,6 +66,20 @@ def update_employee(
         db=db,
         employee_id=employee_id,
         payload=payload,
+        current_user=current_user,
+    )
+
+
+@router.post("/{employee_id}/reactivate", response_model=EmployeeResponse)
+def reactivate_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Reactivate a previously deactivated / soft-deleted employee (ADMIN only)."""
+    return EmployeeService.reactivate_employee(
+        db=db,
+        employee_id=employee_id,
         current_user=current_user,
     )
 

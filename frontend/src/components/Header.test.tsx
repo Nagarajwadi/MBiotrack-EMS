@@ -7,6 +7,7 @@ import {
   mockEmployeeUser,
   mockManagerUser,
   mockUnlinkedAdminUser,
+  mockUnlinkedManagerUser,
 } from '../test/fixtures/authFixtures';
 
 describe('Header component', () => {
@@ -127,6 +128,25 @@ describe('Header component', () => {
       expect(mockNavigate).toHaveBeenCalledWith('leaves');
     });
 
+    it('allows navigating to team attendance tab for manager or admin', async () => {
+      const user = userEvent.setup();
+      render(
+        <Header
+          status="online"
+          user={mockManagerUser}
+          activeView="directory"
+          onNavigate={mockNavigate}
+        />
+      );
+
+      const teamAttendanceBtn = screen.getByRole('button', { name: /team attendance/i });
+      expect(teamAttendanceBtn).toBeInTheDocument();
+      expect(teamAttendanceBtn).not.toHaveAttribute('aria-current');
+
+      await user.click(teamAttendanceBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('team-attendance');
+    });
+
     it('renders navigation tabs for MANAGER with a linked employee profile', async () => {
       const user = userEvent.setup();
       render(
@@ -175,6 +195,37 @@ describe('Header component', () => {
 
       await user.click(mgmtBtn);
       expect(mockNavigate).toHaveBeenCalledWith('management');
+    });
+
+    it('renders navigation tabs for unlinked MANAGER while omitting personal profile', async () => {
+      const user = userEvent.setup();
+      render(
+        <Header
+          status="online"
+          user={mockUnlinkedManagerUser}
+          activeView="directory"
+          onNavigate={mockNavigate}
+        />
+      );
+
+      const nav = screen.getByRole('navigation', { name: /main navigation/i });
+      expect(nav).toBeInTheDocument();
+
+      const dirBtn = screen.getByRole('button', { name: /employee directory/i });
+      const attendanceBtn = screen.getByRole('button', { name: /^attendance$/i });
+      const leavesBtn = screen.getByRole('button', { name: /leaves & holidays/i });
+      const mgmtBtn = screen.getByRole('button', { name: /offices & devices/i });
+      const profileBtn = screen.queryByRole('button', { name: /my profile/i });
+
+      expect(dirBtn).toBeInTheDocument();
+      expect(attendanceBtn).toBeInTheDocument();
+      expect(leavesBtn).toBeInTheDocument();
+      expect(mgmtBtn).toBeInTheDocument();
+      // Unlinked MANAGER has employee_id === null; profile navigation must be strictly omitted
+      expect(profileBtn).not.toBeInTheDocument();
+
+      await user.click(leavesBtn);
+      expect(mockNavigate).toHaveBeenCalledWith('leaves');
     });
 
     it('OMITS navigation tabs for EMPLOYEE (only has profile view)', () => {

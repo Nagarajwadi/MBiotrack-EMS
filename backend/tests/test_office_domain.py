@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token
+from app.core.security import create_access_token, derive_pwd_fingerprint
 from app.db.session import get_db
 from app.main import app
 from app.models.employee import Employee
@@ -79,19 +79,37 @@ def employee_user(dev_db_session) -> User:
 
 @pytest.fixture
 def admin_headers(admin_user: User) -> dict[str, str]:
-    token = create_access_token(subject=admin_user.id, extra_claims={"role": admin_user.role})
+    token = create_access_token(
+        subject=admin_user.id,
+        extra_claims={
+            "role": admin_user.role,
+            "pwd": derive_pwd_fingerprint(admin_user.password_hash),
+        },
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
 def manager_headers(manager_user: User) -> dict[str, str]:
-    token = create_access_token(subject=manager_user.id, extra_claims={"role": manager_user.role})
+    token = create_access_token(
+        subject=manager_user.id,
+        extra_claims={
+            "role": manager_user.role,
+            "pwd": derive_pwd_fingerprint(manager_user.password_hash),
+        },
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
 def employee_headers(employee_user: User) -> dict[str, str]:
-    token = create_access_token(subject=employee_user.id, extra_claims={"role": employee_user.role})
+    token = create_access_token(
+        subject=employee_user.id,
+        extra_claims={
+            "role": employee_user.role,
+            "pwd": derive_pwd_fingerprint(employee_user.password_hash),
+        },
+    )
     return {"Authorization": f"Bearer {token}"}
 
 

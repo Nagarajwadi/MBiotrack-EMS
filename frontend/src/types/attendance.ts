@@ -33,6 +33,7 @@ export interface AttendanceFilterParams {
   start_date?: string;
   end_date?: string;
   is_roaming?: boolean;
+  scope?: string;
   limit?: number;
   offset?: number;
 }
@@ -50,7 +51,59 @@ export interface DailyPunchDetail {
   is_roaming: boolean;
 }
 
-export type AttendanceReviewStatus = 'NO_PUNCH' | 'NORMAL' | 'REQUIRES_REVIEW';
+export type AttendanceReviewStatus = 'NO_PUNCH' | 'NORMAL' | 'REQUIRES_REVIEW' | 'ACKNOWLEDGED';
+
+export interface AttendanceReviewResponse {
+  id: number;
+  employee_id: number;
+  attendance_date: string;
+  reviewed_by_user_id: number;
+  reviewer_name: string;
+  reviewer_email: string;
+  review_status: string;
+  review_notes: string | null;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface AttendanceReviewCreate {
+  employee_id: number;
+  attendance_date: string;
+  review_status?: 'ACKNOWLEDGED';
+  review_notes?: string | null;
+  idempotency_key: string;
+}
+
+export interface AttendanceReviewHistoryResponse {
+  employee_id: number;
+  items: AttendanceReviewResponse[];
+  total_items: number;
+}
+
+export interface AttendanceExceptionItem {
+  employee_id: number;
+  employee_code: string;
+  employee_name: string;
+  department: string | null;
+  assigned_office_id: number | null;
+  assigned_office_name: string | null;
+  attendance_date: string;
+  punch_count: number;
+  first_punch: string | null;
+  last_punch: string | null;
+  has_roaming: boolean;
+  roaming_count: number;
+  review_status: string;
+  review_reason: string | null;
+  latest_review?: AttendanceReviewResponse | null;
+  punches: DailyPunchDetail[];
+}
+
+export interface AttendanceExceptionListResponse {
+  date: string;
+  total_exceptions: number;
+  items: AttendanceExceptionItem[];
+}
 
 export interface EmployeeDailyAttendanceItem {
   employee_id: number;
@@ -67,6 +120,7 @@ export interface EmployeeDailyAttendanceItem {
   roaming_count: number;
   review_status: AttendanceReviewStatus;
   review_reason: string | null;
+  latest_review?: AttendanceReviewResponse | null;
   punches: DailyPunchDetail[];
 }
 
@@ -139,4 +193,26 @@ export interface AttendanceReportFilterParams {
   employee_id?: number;
   limit?: number;
   offset?: number;
+}
+
+export interface AttendancePunchCreatePayload {
+  employee_id?: number | null;
+  device_id: number;
+  punch_type: 'CHECK_IN' | 'CHECK_OUT';
+  punch_time?: string | null;
+  idempotency_key?: string | null;
+}
+
+export interface AttendancePunchResponse {
+  id: number;
+  employee_id: number;
+  device_id: number;
+  office_id: number;
+  punch_type: 'CHECK_IN' | 'CHECK_OUT';
+  event_timestamp: string;
+  is_roaming: boolean;
+  idempotency_key: string | null;
+  actor_user_id: number;
+  created_at: string;
+  notes: string | null;
 }

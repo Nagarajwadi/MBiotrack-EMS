@@ -20,6 +20,27 @@ class LeaveService:
     """Service handling leave request submission, approval workflows, and queries."""
 
     @staticmethod
+    def _get_manager_department(db: Session, current_user: User) -> str:
+        """Validate manager account is linked and return assigned department, or raise HTTP 403."""
+        if current_user.employee_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+            )
+        manager_emp = db.scalar(
+            select(Employee).where(
+                Employee.id == current_user.employee_id,
+                Employee.deleted_at.is_(None),
+            )
+        )
+        if not manager_emp or not manager_emp.department:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Manager has no assigned department team.",
+            )
+        return manager_emp.department
+
+    @staticmethod
     def _to_detail(req: LeaveRequest) -> LeaveRequestDetail:
         emp = req.employee
         reviewer = req.decision_by_user
@@ -65,7 +86,15 @@ class LeaveService:
                     detail="Employees may only submit leave requests for their own profile.",
                 )
             target_employee_id = current_user.employee_id
-        elif current_user.role in ("ADMIN", "MANAGER"):
+        elif current_user.role == "MANAGER":
+            mgr_dept = LeaveService._get_manager_department(db, current_user)
+            target_employee_id = payload.employee_id or current_user.employee_id
+            if target_employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="employee_id is required when submitting on behalf of an employee.",
+                )
+        elif current_user.role == "ADMIN":
             target_employee_id = payload.employee_id or current_user.employee_id
             if target_employee_id is None:
                 raise HTTPException(
@@ -94,6 +123,13 @@ class LeaveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Employee not found or inactive.",
             )
+
+        if current_user.role == "MANAGER" and target_employee_id != current_user.employee_id:
+            if emp_lock.department != mgr_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only submit leave requests for employees within your authorized team.",
+                )
 
         # 3. Check for overlapping active (PENDING or APPROVED) leave requests
         conflict = db.scalar(
@@ -148,6 +184,7 @@ class LeaveService:
         db: Session,
         current_user: User,
         employee_id: int | None = None,
+        department: str | None = None,
         status_filter: str | None = None,
         leave_type_filter: str | None = None,
         start_date: date | None = None,
@@ -161,6 +198,9 @@ class LeaveService:
 
         # Role scoping
         target_employee_id: int | None = None
+        manager_dept: str | None = None
+        filter_dept: str | None = None
+
         if current_user.role == "EMPLOYEE":
             if current_user.employee_id is None:
                 raise HTTPException(
@@ -173,27 +213,54 @@ class LeaveService:
                     detail="Employees may only query their own leave requests.",
                 )
             target_employee_id = current_user.employee_id
-        elif current_user.role in ("ADMIN", "MANAGER"):
+        elif current_user.role == "MANAGER":
+            manager_dept = LeaveService._get_manager_department(db, current_user)
+            filter_dept = manager_dept
+            if employee_id is not None:
+                target_emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not target_emp:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Employee not found.",
+                    )
+                if target_emp.department != manager_dept:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access forbidden: You may only query leave requests for employees within your authorized team.",
+                    )
+                target_employee_id = employee_id
+        elif current_user.role == "ADMIN":
             target_employee_id = employee_id
+            if department and department.strip() and department.strip().upper() != "ALL":
+                filter_dept = department.strip()
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Unauthorized role for leave queries.",
             )
 
-        query = select(LeaveRequest)
-        count_query = select(func.count(LeaveRequest.id))
+        query = select(LeaveRequest).join(Employee, LeaveRequest.employee_id == Employee.id)
+        count_query = select(func.count(LeaveRequest.id)).join(Employee, LeaveRequest.employee_id == Employee.id)
+
+        if filter_dept is not None:
+            query = query.where(Employee.department == filter_dept)
+            count_query = count_query.where(Employee.department == filter_dept)
 
         if target_employee_id is not None:
             query = query.where(LeaveRequest.employee_id == target_employee_id)
             count_query = count_query.where(LeaveRequest.employee_id == target_employee_id)
 
-        if status_filter and status_filter.strip():
+        if status_filter and status_filter.strip() and status_filter.strip().upper() != "ALL":
             norm_status = status_filter.strip().upper()
             query = query.where(LeaveRequest.status == norm_status)
             count_query = count_query.where(LeaveRequest.status == norm_status)
 
-        if leave_type_filter and leave_type_filter.strip():
+        if leave_type_filter and leave_type_filter.strip() and leave_type_filter.strip().upper() != "ALL":
             norm_type = leave_type_filter.strip().upper()
             query = query.where(LeaveRequest.leave_type == norm_type)
             count_query = count_query.where(LeaveRequest.leave_type == norm_type)
@@ -220,6 +287,7 @@ class LeaveService:
             total=total,
             limit=safe_limit,
             offset=safe_offset,
+            department=manager_dept or filter_dept,
         )
 
     @staticmethod
@@ -236,10 +304,23 @@ class LeaveService:
                 detail="Leave request not found.",
             )
 
-        if current_user.role == "EMPLOYEE" and req.employee_id != current_user.employee_id:
+        if current_user.role == "EMPLOYEE":
+            if req.employee_id != current_user.employee_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Unauthorized to view this leave request.",
+                )
+        elif current_user.role == "MANAGER":
+            mgr_dept = LeaveService._get_manager_department(db, current_user)
+            if not req.employee or req.employee.department != mgr_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only view leave requests for employees within your authorized team.",
+                )
+        elif current_user.role != "ADMIN":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Unauthorized to view this leave request.",
+                detail="Unauthorized role for viewing leave requests.",
             )
 
         return LeaveService._to_detail(req)
@@ -252,10 +333,19 @@ class LeaveService:
         payload: LeaveRequestReview,
     ) -> LeaveRequestDetail:
         """Approve or reject a pending leave request (Admin/Manager only, no self-approval)."""
-        if current_user.role not in ("ADMIN", "MANAGER"):
+        if current_user.role == "EMPLOYEE":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only managers and administrators can review leave requests.",
+            )
+
+        mgr_dept: str | None = None
+        if current_user.role == "MANAGER":
+            mgr_dept = LeaveService._get_manager_department(db, current_user)
+        elif current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for reviewing leave requests.",
             )
 
         req = db.execute(
@@ -269,6 +359,13 @@ class LeaveService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Leave request not found.",
             )
+
+        if current_user.role == "MANAGER":
+            if not req.employee or req.employee.department != mgr_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only review leave requests for employees within your authorized team.",
+                )
 
         # Self-approval check: User cannot approve their own request
         if current_user.employee_id is not None and current_user.employee_id == req.employee_id:
@@ -324,6 +421,7 @@ class LeaveService:
                 "decision": req.status,
                 "decision_notes": req.decision_notes,
                 "decided_at": now_utc.isoformat(),
+                "department": req.employee.department if req.employee else None,
             },
         )
         db.add(audit)
@@ -362,7 +460,19 @@ class LeaveService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Employees may only cancel PENDING requests. Current status is '{req.status}'.",
                 )
-        elif current_user.role in ("ADMIN", "MANAGER"):
+        elif current_user.role == "MANAGER":
+            mgr_dept = LeaveService._get_manager_department(db, current_user)
+            if not req.employee or req.employee.department != mgr_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only cancel leave requests for employees within your authorized team.",
+                )
+            if req.status in ("REJECTED", "CANCELLED"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Cannot cancel a leave request in '{req.status}' status.",
+                )
+        elif current_user.role == "ADMIN":
             if req.status in ("REJECTED", "CANCELLED"):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -382,7 +492,10 @@ class LeaveService:
             action="LEAVE_REQUEST_CANCELLED",
             target_type="leave_request",
             target_id=str(req.id),
-            metadata_={"previous_status": old_status},
+            metadata_={
+                "previous_status": old_status,
+                "department": req.employee.department if req.employee else None,
+            },
         )
         db.add(audit)
 

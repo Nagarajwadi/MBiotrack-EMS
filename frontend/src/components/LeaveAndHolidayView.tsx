@@ -41,6 +41,7 @@ export interface LeaveAndHolidayViewProps {
   onNavigateToDirectory?: () => void;
   onNavigateToProfile?: () => void;
   onNavigateToAttendance?: () => void;
+  onNavigateToDashboard?: () => void;
 }
 
 const PAGE_SIZE = 20;
@@ -52,8 +53,10 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   onNavigateToDirectory,
   onNavigateToProfile,
   onNavigateToAttendance,
+  onNavigateToDashboard,
 }) => {
   const isEmployee = currentUser.role === 'EMPLOYEE';
+  const isManager = currentUser.role === 'MANAGER';
   const isAdmin = currentUser.role === 'ADMIN';
   const canReview = canReviewLeave(currentUser.role);
   const canManageHols = canManageHolidays(currentUser.role);
@@ -92,6 +95,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   // =========================================================================
   const [leaveFilterStatus, setLeaveFilterStatus] = useState<string>('ALL');
   const [leaveFilterType, setLeaveFilterType] = useState<string>('ALL');
+  const [leaveFilterDepartment, setLeaveFilterDepartment] = useState<string>('ALL');
   const [leaveFilterStartDate, setLeaveFilterStartDate] = useState<string>('');
   const [leaveFilterEndDate, setLeaveFilterEndDate] = useState<string>('');
   const [leaveFilterEmployeeId, setLeaveFilterEmployeeId] = useState<string>('');
@@ -154,6 +158,9 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
         params.employee_id = empId;
       }
     }
+    if (isAdmin && leaveFilterDepartment !== 'ALL') {
+      params.department = leaveFilterDepartment;
+    }
 
     getLeaveRequests(params)
       .then((res) => {
@@ -175,10 +182,12 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
     leaveOffset,
     leaveFilterStatus,
     leaveFilterType,
+    leaveFilterDepartment,
     leaveFilterStartDate,
     leaveFilterEndDate,
     leaveFilterEmployeeId,
     isEmployee,
+    isAdmin,
     leaveReloadTrigger,
   ]);
 
@@ -403,6 +412,17 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
       {/* Employee Navigation Subnav if role === 'EMPLOYEE' */}
       {isEmployee && (
         <div className="employee-subnav" role="tablist" aria-label="Employee navigation">
+          {onNavigateToDashboard && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected="false"
+              className="nav-tab-btn"
+              onClick={onNavigateToDashboard}
+            >
+              Dashboard
+            </button>
+          )}
           {onNavigateToProfile && (
             <button
               type="button"
@@ -439,9 +459,31 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
       {/* Top Header Section */}
       <div className="dashboard-header-section">
         <div className="dashboard-heading">
-          <h2>Leaves & Holidays</h2>
+          <h2>
+            Leaves & Holidays
+            {isManager && leaveData?.department && (
+              <span
+                className="team-department-badge"
+                data-testid="manager-department-badge"
+                style={{
+                  marginLeft: '12px',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  verticalAlign: 'middle',
+                  padding: '4px 10px',
+                  borderRadius: '12px',
+                  backgroundColor: '#e0e7ff',
+                  color: '#3730a3',
+                }}
+              >
+                Department: {leaveData.department}
+              </span>
+            )}
+          </h2>
           <p>
-            Manage employee leave requests, approvals, and view organizational holiday calendars.
+            {isManager
+              ? `Manage and review leave requests for your ${leaveData?.department ? `${leaveData.department} ` : ''}team.`
+              : 'Manage employee leave requests, approvals, and view organizational holiday calendars.'}
           </p>
         </div>
 
@@ -528,6 +570,23 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
         </div>
       )}
 
+      {/* Unlinked Manager Alert */}
+      {isManager && (!currentUser.employee_id || currentUser.employee_id <= 0) && (
+        <div
+          className="alert-banner error"
+          role="alert"
+          data-testid="unlinked-manager-warning"
+          style={{ marginBottom: '20px' }}
+        >
+          <div className="alert-content">
+            <span>⚠️</span>
+            <span>
+              Your manager account is not linked to an employee profile. You cannot view or review team leave requests until linked to a department.
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Primary Subtabs: Leave Requests vs Holiday Calendar */}
       <div
         className="attendance-tabs-container"
@@ -569,7 +628,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                 📋
               </div>
               <div className="summary-info">
-                <h3>Total Requests</h3>
+                <h3>{isManager ? 'Team Requests' : 'Total Requests'}</h3>
                 <div className="summary-value" data-testid="metric-total-leaves">
                   {leaveMetrics.total}
                 </div>
@@ -581,7 +640,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                 ⏳
               </div>
               <div className="summary-info">
-                <h3>Pending Approval</h3>
+                <h3>{isManager ? 'Team Pending' : 'Pending Approval'}</h3>
                 <div className="summary-value" data-testid="metric-pending-leaves">
                   {leaveMetrics.pending}
                 </div>
@@ -593,7 +652,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                 ✓
               </div>
               <div className="summary-info">
-                <h3>Approved (This View)</h3>
+                <h3>{isManager ? 'Team Approved' : 'Approved (This View)'}</h3>
                 <div className="summary-value" data-testid="metric-approved-leaves">
                   {leaveMetrics.approved}
                 </div>
@@ -719,12 +778,40 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                 </div>
               )}
 
+              {/* Department Filter for Admin */}
+              {isAdmin && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label htmlFor="leave-department-filter" style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b' }}>
+                    Department
+                  </label>
+                  <select
+                    id="leave-department-filter"
+                    className="filter-select"
+                    value={leaveFilterDepartment}
+                    onChange={(e) => {
+                      setLeaveFilterDepartment(e.target.value);
+                      setLeaveOffset(0);
+                    }}
+                    data-testid="leave-department-filter"
+                  >
+                    <option value="ALL">All Departments</option>
+                    <option value="Engineering">Engineering</option>
+                    <option value="Sales">Sales</option>
+                    <option value="Support">Support</option>
+                    <option value="HR">HR</option>
+                    <option value="Finance">Finance</option>
+                    <option value="Operations">Operations</option>
+                  </select>
+                </div>
+              )}
+
               {/* Clear Filters */}
               {(leaveFilterStatus !== 'ALL' ||
                 leaveFilterType !== 'ALL' ||
                 leaveFilterStartDate ||
                 leaveFilterEndDate ||
-                leaveFilterEmployeeId) && (
+                leaveFilterEmployeeId ||
+                (isAdmin && leaveFilterDepartment !== 'ALL')) && (
                 <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                   <button
                     type="button"
@@ -735,6 +822,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                       setLeaveFilterStartDate('');
                       setLeaveFilterEndDate('');
                       setLeaveFilterEmployeeId('');
+                      setLeaveFilterDepartment('ALL');
                       setLeaveOffset(0);
                     }}
                     data-testid="clear-leave-filters-btn"
@@ -1220,7 +1308,8 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
 
                 <p style={{ marginBottom: '16px', fontSize: '0.95rem' }}>
                   Are you sure you want to <strong>{reviewAction.toLowerCase()}</strong> the leave request for{' '}
-                  <strong>{reviewingRequest.employee_name || `Employee #${reviewingRequest.employee_id}`}</strong>?
+                  <strong>{reviewingRequest.employee_name || `Employee #${reviewingRequest.employee_id}`}</strong>
+                  {reviewingRequest.department ? ` (${reviewingRequest.department})` : ''}?
                 </p>
 
                 <div

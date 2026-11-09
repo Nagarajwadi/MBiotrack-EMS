@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProfileEditModal } from './ProfileEditModal';
@@ -40,7 +40,7 @@ describe('ProfileEditModal component', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders organizational and email fields as disabled read-only inputs', () => {
+  it('renders organizational, joining date, and status fields as disabled read-only inputs', () => {
     render(
       <ProfileEditModal
         isOpen={true}
@@ -54,6 +54,8 @@ describe('ProfileEditModal component', () => {
     const emailInput = screen.getByLabelText(/work email/i);
     const deptInput = screen.getByLabelText(/department/i);
     const desigInput = screen.getByLabelText(/designation/i);
+    const joiningInput = screen.getByLabelText(/date of joining/i);
+    const statusInput = screen.getByLabelText(/employment status/i);
 
     expect(codeInput).toBeDisabled();
     expect(codeInput).toHaveValue(mockEmployee1.employee_code);
@@ -66,6 +68,12 @@ describe('ProfileEditModal component', () => {
 
     expect(desigInput).toBeDisabled();
     expect(desigInput).toHaveValue(mockEmployee1.designation);
+
+    expect(joiningInput).toBeDisabled();
+    expect(joiningInput).toHaveValue(mockEmployee1.joining_date);
+
+    expect(statusInput).toBeDisabled();
+    expect(statusInput).toHaveValue('Active Staff');
   });
 
   it('populates editable first_name and last_name inputs', () => {
@@ -114,6 +122,36 @@ describe('ProfileEditModal component', () => {
     await user.click(submitBtn);
 
     expect(await screen.findByText('Last name is required.')).toBeInTheDocument();
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+  });
+
+  it('validates maximum character length limits (100 chars) for names', async () => {
+    const user = userEvent.setup();
+    render(
+      <ProfileEditModal
+        isOpen={true}
+        employee={mockEmployee1}
+        onClose={mockOnClose}
+        onSubmit={mockOnSubmit}
+      />
+    );
+
+    const firstNameInput = screen.getByLabelText(/first name/i);
+    const lastNameInput = screen.getByLabelText(/last name/i);
+    const submitBtn = screen.getByRole('button', { name: /save changes/i });
+
+    // Directly set values > 100 characters to test validation logic
+    fireEvent.change(firstNameInput, { target: { value: 'A'.repeat(101) } });
+    await user.click(submitBtn);
+
+    expect(await screen.findByText('First name cannot exceed 100 characters.')).toBeInTheDocument();
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(firstNameInput, { target: { value: 'Jane' } });
+    fireEvent.change(lastNameInput, { target: { value: 'B'.repeat(101) } });
+    await user.click(submitBtn);
+
+    expect(await screen.findByText('Last name cannot exceed 100 characters.')).toBeInTheDocument();
     expect(mockOnSubmit).not.toHaveBeenCalled();
   });
 
@@ -183,9 +221,27 @@ describe('ProfileEditModal component', () => {
     expect(screen.getByLabelText(/first name/i)).toHaveValue('CustomName');
   });
 
-  it('calls onClose when Cancel or close button is clicked', async () => {
-    const user = userEvent.setup();
+  it('disables inputs and buttons during submission to prevent duplicate submission', () => {
     render(
+      <ProfileEditModal
+        isOpen={true}
+        employee={mockEmployee1}
+        isSubmitting={true}
+        onClose={mockOnClose}
+        onSubmit={mockOnSubmit}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /saving\.\.\./i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /close modal/i })).toBeDisabled();
+    expect(screen.getByLabelText(/first name/i)).toBeDisabled();
+    expect(screen.getByLabelText(/last name/i)).toBeDisabled();
+  });
+
+  it('calls onClose when Cancel, close button, Escape key, or backdrop is clicked', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
       <ProfileEditModal
         isOpen={true}
         employee={mockEmployee1}
@@ -199,6 +255,23 @@ describe('ProfileEditModal component', () => {
 
     await user.click(screen.getByRole('button', { name: /close modal/i }));
     expect(mockOnClose).toHaveBeenCalledTimes(2);
+
+    // Escape key
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(mockOnClose).toHaveBeenCalledTimes(3);
+
+    // When isSubmitting is true, Escape and backdrop clicks are ignored
+    rerender(
+      <ProfileEditModal
+        isOpen={true}
+        employee={mockEmployee1}
+        isSubmitting={true}
+        onClose={mockOnClose}
+        onSubmit={mockOnSubmit}
+      />
+    );
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(mockOnClose).toHaveBeenCalledTimes(3);
   });
 });
-

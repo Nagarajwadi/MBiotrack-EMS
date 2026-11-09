@@ -2,7 +2,7 @@ from datetime import timedelta
 import pytest
 from fastapi import HTTPException
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, derive_pwd_fingerprint, hash_password
 from app.dependencies.auth import (
     get_current_user,
     get_token_payload,
@@ -69,7 +69,10 @@ def test_get_current_user_active_user_success(db_session):
     db_session.add(user)
     db_session.commit()
 
-    token = create_access_token(subject=user.id)
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(user.password_hash)},
+    )
     payload = get_token_payload(token)
 
     resolved_user = get_current_user(token_payload=payload, db=db_session)
@@ -89,13 +92,84 @@ def test_get_current_user_inactive_user_raises_403(db_session):
     db_session.add(user)
     db_session.commit()
 
-    token = create_access_token(subject=user.id)
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(user.password_hash)},
+    )
     payload = get_token_payload(token)
 
     with pytest.raises(HTTPException) as exc_info:
         get_current_user(token_payload=payload, db=db_session)
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "User account is inactive."
+
+
+def test_get_current_user_missing_pwd_claim_raises_401(db_session):
+    """Reject token if the 'pwd' fingerprint claim is missing."""
+    user = User(
+        full_name="Active Admin",
+        email="active_admin_nopwd@example.com",
+        password_hash=hash_password("ValidPassword123!"),
+        role="ADMIN",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    token = create_access_token(subject=user.id)  # No extra_claims / no pwd
+    payload = get_token_payload(token)
+    assert "pwd" not in payload
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(token_payload=payload, db=db_session)
+    assert exc_info.value.status_code == 401
+    assert "revoked" in exc_info.value.detail.lower()
+
+
+def test_get_current_user_mismatched_pwd_claim_raises_401(db_session):
+    """Reject token if the 'pwd' fingerprint claim does not match current password hash."""
+    user = User(
+        full_name="Active Admin",
+        email="active_admin_badpwd@example.com",
+        password_hash=hash_password("ValidPassword123!"),
+        role="ADMIN",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={"pwd": "wrongfingerprint"},
+    )
+    payload = get_token_payload(token)
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_user(token_payload=payload, db=db_session)
+    assert exc_info.value.status_code == 401
+    assert "revoked" in exc_info.value.detail.lower()
+
+
+def test_get_current_user_valid_pwd_claim_succeeds(db_session):
+    """Accept token when 'pwd' fingerprint matches current password hash."""
+    user = User(
+        full_name="Active Admin",
+        email="active_admin_goodpwd@example.com",
+        password_hash=hash_password("ValidPassword123!"),
+        role="ADMIN",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(user.password_hash)},
+    )
+    payload = get_token_payload(token)
+
+    resolved = get_current_user(token_payload=payload, db=db_session)
+    assert resolved.id == user.id
 
 
 def test_require_role_does_not_trust_dict_claims():

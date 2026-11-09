@@ -9,8 +9,9 @@ import type {
 const BASE_URL = '/api/v1/employees';
 const HEALTH_URL = '/health';
 
-export async function getEmployees(): Promise<Employee[]> {
-  return apiFetch<Employee[]>(BASE_URL, {
+export async function getEmployees(status?: 'ACTIVE' | 'INACTIVE' | 'ALL'): Promise<Employee[]> {
+  const url = status && status !== 'ACTIVE' ? `${BASE_URL}?status=${status}` : BASE_URL;
+  return apiFetch<Employee[]>(url, {
     method: 'GET',
     headers: {
       Accept: 'application/json',
@@ -55,6 +56,15 @@ export async function updateEmployee(
 export async function deleteEmployee(id: number): Promise<void> {
   await apiFetch<void>(`${BASE_URL}/${id}`, {
     method: 'DELETE',
+  });
+}
+
+export async function reactivateEmployee(id: number): Promise<Employee> {
+  return apiFetch<Employee>(`${BASE_URL}/${id}/reactivate`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+    },
   });
 }
 

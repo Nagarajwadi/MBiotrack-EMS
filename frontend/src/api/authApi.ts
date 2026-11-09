@@ -1,5 +1,11 @@
 import { apiFetch } from './client';
-import type { LoginCredentials, LogoutResponse, TokenResponse, User } from '../types/auth';
+import type {
+  LoginCredentials,
+  LogoutResponse,
+  PasswordChangePayload,
+  TokenResponse,
+  User,
+} from '../types/auth';
 
 const AUTH_BASE = '/api/v1/auth';
 
@@ -32,6 +38,17 @@ export async function logout(token?: string): Promise<LogoutResponse> {
       Accept: 'application/json',
     },
     token,
+  });
+}
+
+export async function changePassword(payload: PasswordChangePayload): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`${AUTH_BASE}/change-password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
 }
 

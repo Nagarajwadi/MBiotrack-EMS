@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, derive_pwd_fingerprint, hash_password
 from app.models.employee import Employee
 from app.models.user import User
 
@@ -31,7 +31,10 @@ def authenticate_as_admin(client, db_session):
     )
     db_session.add(admin)
     db_session.commit()
-    token = create_access_token(subject=admin.id)
+    token = create_access_token(
+        subject=admin.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(admin.password_hash)},
+    )
     client.headers["Authorization"] = f"Bearer {token}"
 
 

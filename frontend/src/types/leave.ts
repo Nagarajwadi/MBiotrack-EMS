@@ -38,10 +38,12 @@ export interface LeaveRequestListResponse {
   total: number;
   limit: number;
   offset: number;
+  department?: string | null;
 }
 
 export interface LeaveFilterParams {
   employee_id?: number;
+  department?: string;
   status?: string;
   leave_type?: string;
   start_date?: string;

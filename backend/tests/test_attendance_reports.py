@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, derive_pwd_fingerprint, hash_password
 from app.db.session import get_db
 from app.main import app
 from app.models.attendance_event import AttendanceEvent
@@ -213,7 +213,13 @@ def report_test_data(dev_db_session: Session):
 
 
 def make_headers(user: User) -> dict[str, str]:
-    token = create_access_token(subject=user.id, extra_claims={"role": user.role})
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={
+            "role": user.role,
+            "pwd": derive_pwd_fingerprint(user.password_hash),
+        },
+    )
     return {"Authorization": f"Bearer {token}"}
 
 

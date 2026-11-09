@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -50,6 +51,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return _password_hash.verify(plain_password, hashed_password)
     except Exception:
         return False
+
+
+def derive_pwd_fingerprint(password_hash: str) -> str:
+    """Generate a non-reversible, non-sensitive fingerprint of a password hash.
+
+    Used for instant JWT revocation upon password changes or resets without storing state.
+    """
+    if not password_hash:
+        return ""
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
 
 
 def create_access_token(

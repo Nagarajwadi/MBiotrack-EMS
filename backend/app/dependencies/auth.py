@@ -1,3 +1,4 @@
+import hmac
 from collections.abc import Callable
 from typing import Any
 
@@ -6,7 +7,12 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import TokenExpiredError, TokenInvalidError, decode_access_token
+from app.core.security import (
+    TokenExpiredError,
+    TokenInvalidError,
+    decode_access_token,
+    derive_pwd_fingerprint,
+)
 from app.db.session import get_db
 from app.models.user import User
 
@@ -61,11 +67,29 @@ def get_current_user(
             detail="User account no longer exists.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Invalidate session if credentials changed since token issuance or if pwd claim is missing
+    token_pwd = token_payload.get("pwd")
+    if not token_pwd or not hmac.compare_digest(
+        str(token_pwd), derive_pwd_fingerprint(user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked due to credential change.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive.",
         )
+    if user.employee_id is not None:
+        employee = user.employee
+        if employee is None or not employee.is_active or employee.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is inactive.",
+            )
     return user
 
 

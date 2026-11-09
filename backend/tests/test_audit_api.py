@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, derive_pwd_fingerprint, hash_password
 from app.models.audit_log import AuditLog
 from app.models.employee import Employee
 from app.models.user import User
@@ -91,7 +91,10 @@ def employee_user(db_session: Session) -> User:
 
 
 def get_auth_headers(user: User) -> dict[str, str]:
-    token = create_access_token(subject=user.id)
+    token = create_access_token(
+        subject=user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(user.password_hash)},
+    )
     return {"Authorization": f"Bearer {token}"}
 
 

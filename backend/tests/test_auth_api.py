@@ -7,7 +7,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, decode_access_token, hash_password
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    derive_pwd_fingerprint,
+    hash_password,
+)
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.auth import LoginRequest
@@ -136,7 +141,10 @@ def test_jwt_numeric_subject_roundtrip():
 # ---------------------------------------------------------------------------
 
 def test_get_me_success(client: TestClient, active_user: User):
-    token = create_access_token(subject=active_user.id)
+    token = create_access_token(
+        subject=active_user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(active_user.password_hash)},
+    )
     response = client.get(
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -160,6 +168,7 @@ def test_get_me_expired_token_returns_401(client: TestClient, active_user: User)
     expired_token = create_access_token(
         subject=active_user.id,
         expires_delta=timedelta(seconds=-10),
+        extra_claims={"pwd": derive_pwd_fingerprint(active_user.password_hash)},
     )
     response = client.get(
         "/api/v1/auth/me",
@@ -170,7 +179,10 @@ def test_get_me_expired_token_returns_401(client: TestClient, active_user: User)
 
 
 def test_get_me_inactive_user_after_token_issued_returns_403(client: TestClient, active_user: User, db_session: Session):
-    token = create_access_token(subject=active_user.id)
+    token = create_access_token(
+        subject=active_user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(active_user.password_hash)},
+    )
     
     # Deactivate user after token creation
     active_user.is_active = False
@@ -185,7 +197,10 @@ def test_get_me_inactive_user_after_token_issued_returns_403(client: TestClient,
 
 
 def test_logout_stateless(client: TestClient, active_user: User):
-    token = create_access_token(subject=active_user.id)
+    token = create_access_token(
+        subject=active_user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(active_user.password_hash)},
+    )
     response = client.post(
         "/api/v1/auth/logout",
         headers={"Authorization": f"Bearer {token}"},
@@ -482,7 +497,10 @@ def test_client_ip_cf_connecting_ip_ignores_spoofed_x_forwarded_for(client: Test
 
 def test_attendance_punch_uses_centralized_client_ip_resolver(client: TestClient, active_user: User, monkeypatch):
     monkeypatch.setattr(settings, "TRUST_EDGE_CLIENT_IP", True)
-    token = create_access_token(subject=active_user.id)
+    token = create_access_token(
+        subject=active_user.id,
+        extra_claims={"pwd": derive_pwd_fingerprint(active_user.password_hash)},
+    )
     response = client.post(
         "/api/v1/attendance/punch",
         json={"employee_id": 1, "device_id": 1, "punch_type": "CHECK_IN"},

@@ -188,6 +188,30 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({
             </div>
           </div>
 
+          <div className="form-grid-2">
+            <div className="form-group">
+              <label htmlFor="pe-joining">Date of Joining</label>
+              <input
+                id="pe-joining"
+                type="text"
+                value={employee.joining_date}
+                disabled
+                className="input-readonly"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="pe-status">Employment Status</label>
+              <input
+                id="pe-status"
+                type="text"
+                value={employee.is_active ? 'Active Staff' : 'Inactive'}
+                disabled
+                className="input-readonly"
+              />
+            </div>
+          </div>
+
           {/* Editable Fields: First Name and Last Name */}
           <div className="form-grid-2" style={{ marginTop: '0.5rem' }}>
             <div className="form-group">
@@ -205,10 +229,18 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({
                   }
                 }}
                 disabled={isSubmitting}
+                maxLength={100}
+                aria-required="true"
+                aria-invalid={Boolean(errors.first_name)}
+                aria-describedby={errors.first_name ? 'pe-first-name-error' : undefined}
                 className={errors.first_name ? 'input-error' : ''}
                 autoFocus
               />
-              {errors.first_name && <span className="field-error-msg">{errors.first_name}</span>}
+              {errors.first_name && (
+                <span id="pe-first-name-error" className="field-error-msg" role="alert">
+                  {errors.first_name}
+                </span>
+              )}
             </div>
 
             <div className="form-group">
@@ -226,9 +258,17 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({
                   }
                 }}
                 disabled={isSubmitting}
+                maxLength={100}
+                aria-required="true"
+                aria-invalid={Boolean(errors.last_name)}
+                aria-describedby={errors.last_name ? 'pe-last-name-error' : undefined}
                 className={errors.last_name ? 'input-error' : ''}
               />
-              {errors.last_name && <span className="field-error-msg">{errors.last_name}</span>}
+              {errors.last_name && (
+                <span id="pe-last-name-error" className="field-error-msg" role="alert">
+                  {errors.last_name}
+                </span>
+              )}
             </div>
           </div>
 

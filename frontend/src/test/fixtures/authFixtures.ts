@@ -55,6 +55,17 @@ export const mockUnlinkedEmployeeUser: User = {
   updated_at: '2026-01-01T00:00:00Z',
 };
 
+export const mockUnlinkedManagerUser: User = {
+  id: 7,
+  employee_id: null,
+  full_name: 'Unlinked Manager',
+  email: 'unlinked.manager@mbiotrack.local',
+  role: 'MANAGER',
+  is_active: true,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
 export const mockInactiveUser: User = {
   id: 6,
   employee_id: 4,

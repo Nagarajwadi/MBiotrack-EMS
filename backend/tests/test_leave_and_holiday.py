@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token, derive_pwd_fingerprint, hash_password
 from app.db.session import get_db
 from app.main import app
 from app.models.audit_log import AuditLog
@@ -84,8 +84,8 @@ def leave_test_data(dev_db_session: Session):
         first_name="Bob",
         last_name="Staff",
         email="bob.leave@example.com",
-        department="Support",
-        designation="Support Specialist",
+        department="Engineering",
+        designation="Engineering Lead",
         joining_date=date(2025, 2, 1),
         is_active=True,
     )
@@ -121,9 +121,30 @@ def leave_test_data(dev_db_session: Session):
     dev_db_session.flush()
 
     # 4. Auth tokens
-    admin_token = create_access_token(subject=str(admin_user.id), extra_claims={"role": "ADMIN", "email": admin_user.email})
-    manager_token = create_access_token(subject=str(manager_user.id), extra_claims={"role": "MANAGER", "email": manager_user.email})
-    employee_token = create_access_token(subject=str(employee_user.id), extra_claims={"role": "EMPLOYEE", "email": employee_user.email})
+    admin_token = create_access_token(
+        subject=str(admin_user.id),
+        extra_claims={
+            "role": "ADMIN",
+            "email": admin_user.email,
+            "pwd": derive_pwd_fingerprint(admin_user.password_hash),
+        },
+    )
+    manager_token = create_access_token(
+        subject=str(manager_user.id),
+        extra_claims={
+            "role": "MANAGER",
+            "email": manager_user.email,
+            "pwd": derive_pwd_fingerprint(manager_user.password_hash),
+        },
+    )
+    employee_token = create_access_token(
+        subject=str(employee_user.id),
+        extra_claims={
+            "role": "EMPLOYEE",
+            "email": employee_user.email,
+            "pwd": derive_pwd_fingerprint(employee_user.password_hash),
+        },
+    )
 
     return {
         "office": office,

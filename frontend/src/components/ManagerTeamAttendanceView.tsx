@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acknowledgeAttendanceException,
+  getAttendanceCorrections,
   getAttendanceReviews,
   getTeamAttendanceSummary,
+  reviewAttendanceCorrection,
 } from '../api/attendanceApi';
 import { ApiError } from '../api/apiError';
 import type { User } from '../types/auth';
 import type {
+  AttendanceCorrectionResponse,
+  AttendanceCorrectionStatus,
   AttendanceReviewResponse,
   DailyAttendanceOperationsResponse,
   DailyPunchDetail,
@@ -155,6 +159,83 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
   const [reviewHistory, setReviewHistory] = useState<AttendanceReviewResponse[] | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+
+  // Top-level View Tab: 'attendance' vs 'corrections'
+  const [activeTab, setActiveTab] = useState<'attendance' | 'corrections'>('attendance');
+
+  // Attendance Corrections Management State (Phase 2)
+  const [correctionsList, setCorrectionsList] = useState<AttendanceCorrectionResponse[]>([]);
+  const [isCorrectionsLoading, setIsCorrectionsLoading] = useState<boolean>(false);
+  const [correctionsError, setCorrectionsError] = useState<string | null>(null);
+  const [correctionStatusFilter, setCorrectionStatusFilter] = useState<AttendanceCorrectionStatus | 'ALL'>('PENDING');
+  const [correctionsReloadTrigger, setCorrectionsReloadTrigger] = useState<number>(0);
+
+  // Correction Review Modal State
+  const [reviewingCorrection, setReviewingCorrection] = useState<{
+    correction: AttendanceCorrectionResponse;
+    action: 'APPROVED' | 'REJECTED';
+  } | null>(null);
+  const [reviewNotesInput, setReviewNotesInput] = useState<string>('');
+  const [isSubmittingCorrectionReview, setIsSubmittingCorrectionReview] = useState<boolean>(false);
+  const [correctionReviewError, setCorrectionReviewError] = useState<string | null>(null);
+  const [correctionSuccessMessage, setCorrectionSuccessMessage] = useState<string | null>(null);
+
+  // Load correction requests
+  useEffect(() => {
+    let isMounted = true;
+
+    getAttendanceCorrections({
+      status: correctionStatusFilter === 'ALL' ? undefined : correctionStatusFilter,
+    })
+      .then((res) => {
+        if (isMounted) {
+          setCorrectionsList(res.items);
+          setIsCorrectionsLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setCorrectionsError(err instanceof Error ? err.message : 'Failed to load corrections.');
+          setIsCorrectionsLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [correctionStatusFilter, correctionsReloadTrigger, reloadTrigger]);
+
+  const handleReviewCorrectionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reviewingCorrection) return;
+
+    setCorrectionReviewError(null);
+    setIsSubmittingCorrectionReview(true);
+
+    try {
+      await reviewAttendanceCorrection(reviewingCorrection.correction.id, {
+        status: reviewingCorrection.action,
+        review_notes: reviewNotesInput.trim() ? reviewNotesInput.trim() : null,
+      });
+      setIsSubmittingCorrectionReview(false);
+      setReviewingCorrection(null);
+      setReviewNotesInput('');
+      setCorrectionSuccessMessage(
+        `Correction request for ${reviewingCorrection.correction.employee_name || 'employee'} has been ${reviewingCorrection.action.toLowerCase()}.`
+      );
+      setCorrectionsReloadTrigger((prev) => prev + 1);
+      setReloadTrigger((prev) => prev + 1);
+    } catch (err: unknown) {
+      setIsSubmittingCorrectionReview(false);
+      if (err instanceof ApiError) {
+        setCorrectionReviewError(err.message || 'Failed to review correction.');
+      } else if (err instanceof Error) {
+        setCorrectionReviewError(err.message);
+      } else {
+        setCorrectionReviewError('An unexpected error occurred.');
+      }
+    }
+  };
 
   // Open modal and initialize fresh idempotency key & reset state
   const openEmployeeDetail = useCallback((emp: EmployeeDailyAttendanceItem) => {
@@ -554,6 +635,47 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
         )}
       </div>
 
+      {/* Subnavigation Tabs */}
+      <div className="attendance-tabs-nav" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '0.5rem' }}>
+        <button
+          type="button"
+          className={`btn btn-sm ${activeTab === 'attendance' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('attendance')}
+        >
+          Team Daily Attendance
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${activeTab === 'corrections' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('corrections')}
+        >
+          Correction Requests
+          {correctionsList.filter((c) => c.status === 'PENDING').length > 0 && (
+            <span
+              className="badge"
+              style={{
+                marginLeft: '0.5rem',
+                backgroundColor: activeTab === 'corrections' ? '#ffffff' : '#ef4444',
+                color: activeTab === 'corrections' ? '#0f172a' : '#ffffff',
+                borderRadius: '10px',
+                padding: '0.15rem 0.45rem',
+                fontSize: '0.75rem',
+              }}
+            >
+              {correctionsList.filter((c) => c.status === 'PENDING').length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Success Notification Banner */}
+      {correctionSuccessMessage && (
+        <div className="alert-banner success" role="status" style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>✓ {correctionSuccessMessage}</span>
+          <button type="button" className="btn btn-sm btn-link" onClick={() => setCorrectionSuccessMessage(null)}>Dismiss</button>
+        </div>
+      )}
+
       {/* Error Alert Banner */}
       {loadError && (
         <div className="alert-banner error" role="alert">
@@ -571,8 +693,11 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
         </div>
       )}
 
-      {/* Loading State */}
-      {isLoading ? (
+      {/* Main Tab 1: Team Daily Attendance */}
+      {activeTab === 'attendance' && (
+        <>
+          {/* Loading State */}
+          {isLoading ? (
         <div
           role="progressbar"
           aria-label="Loading team attendance..."
@@ -825,12 +950,38 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
                         <td>
                           <span className="punch-time-cell">
                             {formatTime(firstInPunch?.event_timestamp || emp.first_punch)}
+                            {firstInPunch?.is_corrected && (
+                              <span
+                                style={{
+                                  marginLeft: '0.25rem',
+                                  color: '#0284c7',
+                                  fontSize: '0.65rem',
+                                  fontWeight: 600,
+                                }}
+                                title="Corrected punch"
+                              >
+                                (C)
+                              </span>
+                            )}
                           </span>
                         </td>
 
                         <td>
                           <span className="punch-time-cell">
                             {formatTime(lastOutPunch?.event_timestamp)}
+                            {lastOutPunch?.is_corrected && (
+                              <span
+                                style={{
+                                  marginLeft: '0.25rem',
+                                  color: '#0284c7',
+                                  fontSize: '0.65rem',
+                                  fontWeight: 600,
+                                }}
+                                title="Corrected punch"
+                              >
+                                (C)
+                              </span>
+                            )}
                           </span>
                         </td>
 
@@ -849,6 +1000,23 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
                               >
                                 {latestPunch.punch_type}
                               </span>
+                              {latestPunch.is_corrected && (
+                                <span
+                                  className="badge badge-corrected-xs"
+                                  style={{
+                                    marginLeft: '0.25rem',
+                                    backgroundColor: '#e0f2fe',
+                                    color: '#0369a1',
+                                    fontSize: '0.65rem',
+                                    padding: '0.1rem 0.25rem',
+                                    borderRadius: '3px',
+                                    fontWeight: 600,
+                                  }}
+                                  title="Corrected punch"
+                                >
+                                  C
+                                </span>
+                              )}
                             </div>
                           ) : (
                             <span className="text-muted">—</span>
@@ -873,6 +1041,228 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
             </div>
           )}
         </>
+      )}
+        </>
+      )}
+
+      {/* Main Tab 2: Attendance Correction Requests */}
+      {activeTab === 'corrections' && (
+        <section className="corrections-review-section" aria-label="Attendance Correction Requests">
+          <div className="team-filters-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+            <div className="filter-group" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="filter-label" style={{ fontWeight: 600, fontSize: '0.875rem' }}>Status Filter:</span>
+              {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  className={`btn btn-sm ${correctionStatusFilter === st ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setCorrectionStatusFilter(st)}
+                >
+                  {st === 'ALL' ? 'All Requests' : st.charAt(0) + st.slice(1).toLowerCase()}
+                </button>
+              ))}
+            </div>
+            <div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setCorrectionsReloadTrigger((prev) => prev + 1)}
+                disabled={isCorrectionsLoading}
+              >
+                {isCorrectionsLoading ? 'Refreshing...' : '🔄 Refresh Corrections'}
+              </button>
+            </div>
+          </div>
+
+          {correctionsError && (
+            <div className="alert-banner error" role="alert" style={{ marginBottom: '1rem' }}>
+              <div className="alert-content">
+                <span aria-hidden="true">⚠️</span>
+                <span>{correctionsError}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => setCorrectionsReloadTrigger((prev) => prev + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {isCorrectionsLoading ? (
+            <div role="progressbar" aria-label="Loading correction requests..." className="dashboard-loading-state">
+              <div className="spinner" aria-hidden="true" />
+              <p>Loading attendance correction requests...</p>
+            </div>
+          ) : correctionsList.length === 0 ? (
+            <div className="empty-state team-empty-state">
+              <span className="empty-icon" aria-hidden="true">📋</span>
+              <p className="empty-title">No attendance correction requests found.</p>
+              <p className="empty-subtitle">
+                {correctionStatusFilter === 'ALL'
+                  ? 'There are no correction requests submitted for your authorized team scope.'
+                  : `There are no ${correctionStatusFilter.toLowerCase()} correction requests.`}
+              </p>
+            </div>
+          ) : (
+            <div className="table-responsive team-attendance-table-container">
+              <table className="mbiotrack-table team-table" aria-label="Attendance Correction Requests Table">
+                <thead>
+                  <tr>
+                    <th scope="col">Date</th>
+                    <th scope="col">Employee</th>
+                    <th scope="col">Correction Type</th>
+                    <th scope="col">Proposed Punch</th>
+                    <th scope="col">Reason</th>
+                    <th scope="col">Requested By</th>
+                    <th scope="col">Status</th>
+                    <th scope="col" className="text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {correctionsList.map((corr) => {
+                    const isSelfRequest =
+                      currentUser.id === corr.requested_by_user_id ||
+                      (!!currentUser.employee_id && currentUser.employee_id === corr.employee_id);
+
+                    return (
+                      <tr key={corr.id}>
+                        <td>
+                          <strong>{corr.attendance_date}</strong>
+                        </td>
+                        <td>
+                          <div className="employee-text-meta">
+                            <span className="employee-full-name">{corr.employee_name || `Employee #${corr.employee_id}`}</span>
+                            {corr.employee_code && <span className="employee-sub-code">{corr.employee_code}</span>}
+                          </div>
+                        </td>
+                        <td>
+                          <span
+                            className={`badge ${
+                              corr.correction_type === 'MISSING_CHECK_IN'
+                                ? 'badge-in'
+                                : corr.correction_type === 'MISSING_CHECK_OUT'
+                                ? 'badge-out'
+                                : 'badge-secondary'
+                            }`}
+                            style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}
+                          >
+                            {corr.correction_type.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td>
+                          <div>
+                            <strong>{formatTime(corr.proposed_timestamp)}</strong>
+                            <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                              {formatDateTime(corr.proposed_timestamp)}
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ maxWidth: '240px' }}>
+                          <span title={corr.reason} style={{ fontSize: '0.85rem' }}>
+                            {corr.reason}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{ fontSize: '0.85rem' }}>
+                            {corr.requester_name || corr.requester_email || `User #${corr.requested_by_user_id}`}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            className={`badge ${
+                              corr.status === 'APPROVED'
+                                ? 'badge-success'
+                                : corr.status === 'REJECTED'
+                                ? 'badge-danger'
+                                : 'badge-warning'
+                            }`}
+                            style={{
+                              padding: '0.2rem 0.5rem',
+                              borderRadius: '4px',
+                              fontSize: '0.75rem',
+                              fontWeight: 600,
+                              backgroundColor:
+                                corr.status === 'APPROVED'
+                                  ? '#dcfce7'
+                                  : corr.status === 'REJECTED'
+                                  ? '#fee2e2'
+                                  : '#fef3c7',
+                              color:
+                                corr.status === 'APPROVED'
+                                  ? '#15803d'
+                                  : corr.status === 'REJECTED'
+                                  ? '#b91c1c'
+                                  : '#b45309',
+                            }}
+                          >
+                            {corr.status}
+                          </span>
+                        </td>
+                        <td className="text-right">
+                          {corr.status === 'PENDING' ? (
+                            isSelfRequest ? (
+                              <span
+                                className="badge badge-secondary"
+                                style={{
+                                  fontSize: '0.75rem',
+                                  padding: '0.25rem 0.5rem',
+                                  backgroundColor: '#f1f5f9',
+                                  color: '#64748b',
+                                  border: '1px solid #cbd5e1',
+                                }}
+                                title="Managers and admins cannot approve their own requests (Anti-Self-Approval policy)"
+                              >
+                                Self-Request (Review Prohibited)
+                              </span>
+                            ) : (
+                              <div style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-success"
+                                  style={{ backgroundColor: '#16a34a', color: '#fff', border: 'none', padding: '0.25rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => {
+                                    setReviewingCorrection({ correction: corr, action: 'APPROVED' });
+                                    setReviewNotesInput('');
+                                    setCorrectionReviewError(null);
+                                  }}
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-danger"
+                                  style={{ backgroundColor: '#dc2626', color: '#fff', border: 'none', padding: '0.25rem 0.6rem', borderRadius: '4px', cursor: 'pointer' }}
+                                  onClick={() => {
+                                    setReviewingCorrection({ correction: corr, action: 'REJECTED' });
+                                    setReviewNotesInput('');
+                                    setCorrectionReviewError(null);
+                                  }}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            )
+                          ) : (
+                            <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                              <span>{corr.reviewer_name ? `By ${corr.reviewer_name}` : 'Reviewed'}</span>
+                              {corr.review_notes && (
+                                <div title={corr.review_notes} style={{ fontStyle: 'italic', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  "{corr.review_notes}"
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
 
       {/* Employee Punch Detail Modal */}
@@ -1155,6 +1545,24 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
                             >
                               {punch.punch_type}
                             </span>
+                            {punch.is_corrected && (
+                              <span
+                                className="badge badge-corrected"
+                                style={{
+                                  marginLeft: '0.4rem',
+                                  backgroundColor: '#e0f2fe',
+                                  color: '#0369a1',
+                                  border: '1px solid #bae6fd',
+                                  fontSize: '0.7rem',
+                                  padding: '0.15rem 0.35rem',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                }}
+                                title={punch.correction_id ? `Approved correction #${punch.correction_id}` : 'Approved correction'}
+                              >
+                                Corrected
+                              </span>
+                            )}
                           </td>
                           <td>
                             <strong>{formatTime(punch.event_timestamp)}</strong>
@@ -1198,6 +1606,124 @@ export const ManagerTeamAttendanceView: React.FC<ManagerTeamAttendanceViewProps>
                 ← Back to Team Overview
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Correction Review Decision Modal */}
+      {reviewingCorrection && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!isSubmittingCorrectionReview) {
+              setReviewingCorrection(null);
+              setCorrectionReviewError(null);
+            }
+          }}
+          role="presentation"
+        >
+          <div
+            className="modal-content"
+            style={{ maxWidth: '500px' }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="correction-review-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="correction-review-modal-title">
+                {reviewingCorrection.action === 'APPROVED' ? 'Approve' : 'Reject'} Attendance Correction
+              </h3>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => {
+                  if (!isSubmittingCorrectionReview) {
+                    setReviewingCorrection(null);
+                    setCorrectionReviewError(null);
+                  }
+                }}
+                disabled={isSubmittingCorrectionReview}
+                aria-label="Close review dialog"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleReviewCorrectionSubmit}>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {correctionReviewError && (
+                  <div className="alert-banner error" role="alert">
+                    <span>{correctionReviewError}</span>
+                  </div>
+                )}
+
+                <div style={{ backgroundColor: '#f8fafc', padding: '0.75rem 1rem', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '0.875rem' }}>
+                  <p style={{ margin: '0 0 0.25rem 0' }}>
+                    <strong>Employee:</strong> {reviewingCorrection.correction.employee_name || `Employee #${reviewingCorrection.correction.employee_id}`}
+                  </p>
+                  <p style={{ margin: '0 0 0.25rem 0' }}>
+                    <strong>Date:</strong> {reviewingCorrection.correction.attendance_date}
+                  </p>
+                  <p style={{ margin: '0 0 0.25rem 0' }}>
+                    <strong>Type:</strong> {reviewingCorrection.correction.correction_type.replace(/_/g, ' ')}
+                  </p>
+                  <p style={{ margin: '0 0 0.25rem 0' }}>
+                    <strong>Proposed Timestamp:</strong> {formatDateTime(reviewingCorrection.correction.proposed_timestamp)}
+                  </p>
+                  <p style={{ margin: '0' }}>
+                    <strong>Reason:</strong> {reviewingCorrection.correction.reason}
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="correction-review-notes" className="form-label">
+                    Supervisor Review Notes (Optional, max 1000 characters):
+                  </label>
+                  <textarea
+                    id="correction-review-notes"
+                    className="form-textarea"
+                    rows={3}
+                    maxLength={1000}
+                    placeholder="Provide any context or justification for this decision..."
+                    value={reviewNotesInput}
+                    onChange={(e) => setReviewNotesInput(e.target.value)}
+                    disabled={isSubmittingCorrectionReview}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: '#64748b', textAlign: 'right', marginTop: '0.25rem' }}>
+                    {reviewNotesInput.length} / 1000
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setReviewingCorrection(null);
+                    setCorrectionReviewError(null);
+                  }}
+                  disabled={isSubmittingCorrectionReview}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className={`btn ${reviewingCorrection.action === 'APPROVED' ? 'btn-success' : 'btn-danger'}`}
+                  style={{
+                    backgroundColor: reviewingCorrection.action === 'APPROVED' ? '#16a34a' : '#dc2626',
+                    color: '#fff',
+                  }}
+                  disabled={isSubmittingCorrectionReview}
+                >
+                  {isSubmittingCorrectionReview
+                    ? 'Submitting...'
+                    : reviewingCorrection.action === 'APPROVED'
+                    ? 'Confirm Approval'
+                    : 'Confirm Rejection'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

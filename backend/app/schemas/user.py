@@ -35,6 +35,12 @@ class UserStatusUpdate(BaseModel):
     is_active: bool = Field(description="Desired account active state")
 
 
+class UserRoleUpdate(BaseModel):
+    role: Literal["EMPLOYEE", "MANAGER"] = Field(
+        description="Assigned role: EMPLOYEE or MANAGER (ADMIN not permitted)"
+    )
+
+
 class PasswordResetRequest(BaseModel):
     new_password: str = Field(
         min_length=12,
@@ -56,3 +62,4 @@ class UserAccountResponse(BaseModel):
     updated_at: datetime
     employee_code: str | None = None
     department: str | None = None
+    employee_is_active: bool | None = None

@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -15,101 +15,9 @@ from app.models.user import User
 settings = get_settings()
 
 
-@pytest.fixture
-def dev_db_session():
-    """Provide a database session targeting mbiotrack_dev isolated in a transaction savepoint.
-
-    All operations are rolled back on fixture teardown, guaranteeing zero persisted test data.
-    """
-    assert settings.DATABASE_URL is not None, "DATABASE_URL must be configured"
-    engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
-    connection = engine.connect()
-    transaction = connection.begin()
-
-    session = Session(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-        expire_on_commit=False,
-    )
-
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
-        engine.dispose()
 
 
-@pytest.fixture
-def dev_client(dev_db_session):
-    """FastAPI TestClient with get_db overridden to use dev_db_session."""
-    def override_get_db():
-        yield dev_db_session
 
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def admin_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "ADMIN", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active ADMIN user"
-    return user
-
-
-@pytest.fixture
-def manager_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "MANAGER", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active MANAGER user"
-    return user
-
-
-@pytest.fixture
-def employee_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "EMPLOYEE", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active EMPLOYEE user"
-    return user
-
-
-@pytest.fixture
-def admin_headers(admin_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=admin_user.id,
-        extra_claims={
-            "role": admin_user.role,
-            "pwd": derive_pwd_fingerprint(admin_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def manager_headers(manager_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=manager_user.id,
-        extra_claims={
-            "role": manager_user.role,
-            "pwd": derive_pwd_fingerprint(manager_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def employee_headers(employee_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=employee_user.id,
-        extra_claims={
-            "role": employee_user.role,
-            "pwd": derive_pwd_fingerprint(employee_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture

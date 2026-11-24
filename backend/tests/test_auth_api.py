@@ -1,5 +1,7 @@
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
+import ipaddress
+import uuid
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -282,7 +284,7 @@ def test_concurrent_failed_logins_strictly_enforce_rate_limit(test_engine):
     10 concurrent failed login attempts from the same IP must result in exactly 5 failures (401)
     and 5 rate-limit rejections (429).
     """
-    client_ip = "198.51.100.99"
+    client_ip = str(ipaddress.IPv6Address(uuid.uuid4().bytes))
     payload = LoginRequest(email="concurrent@example.com", password="WrongPassword123!")
 
     def attempt_login():
@@ -293,21 +295,15 @@ def test_concurrent_failed_logins_strictly_enforce_rate_limit(test_engine):
             except HTTPException as e:
                 return e.status_code
 
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(attempt_login) for _ in range(10)]
-            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(attempt_login) for _ in range(10)]
+        results = [f.result() for f in concurrent.futures.as_completed(futures)]
 
-        status_401_count = results.count(401)
-        status_429_count = results.count(429)
+    status_401_count = results.count(401)
+    status_429_count = results.count(429)
 
-        assert status_401_count == 5, f"Expected 5 401s, got {status_401_count}"
-        assert status_429_count == 5, f"Expected 5 429s, got {status_429_count}"
-    finally:
-        # Strictly clean up only records created by this test IP
-        with Session(bind=test_engine) as cleanup_session:
-            cleanup_session.execute(delete(AuditLog).where(AuditLog.ip_address == client_ip))
-            cleanup_session.commit()
+    assert status_401_count == 5, f"Expected 5 401s, got {status_401_count}"
+    assert status_429_count == 5, f"Expected 5 429s, got {status_429_count}"
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,40 +19,6 @@ from app.models.user import User
 settings = get_settings()
 
 
-@pytest.fixture
-def dev_db_session():
-    """Target mbiotrack_dev isolated in a transaction savepoint with guaranteed rollback."""
-    assert settings.DATABASE_URL is not None, "DATABASE_URL must be configured"
-    engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
-    connection = engine.connect()
-    transaction = connection.begin()
-
-    session = Session(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-        expire_on_commit=False,
-    )
-
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
-        engine.dispose()
-
-
-@pytest.fixture
-def dev_client(dev_db_session):
-    def override_get_db():
-        yield dev_db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -304,8 +270,8 @@ def test_leave_request_review_and_self_approval_prevention(dev_client: TestClien
         "/api/v1/leaves",
         json={
             "employee_id": leave_test_data["emp2"].id,
-            "start_date": "2026-12-05",
-            "end_date": "2026-12-06",
+            "start_date": "2026-12-07",
+            "end_date": "2026-12-08",
             "leave_type": "ANNUAL",
         },
         headers=mgr_headers,

@@ -237,6 +237,101 @@ describe('ManagementView component', () => {
     expect(screen.queryByText('Old Terminal')).not.toBeInTheDocument();
   });
 
+  it('opens Edit device modal with populated data and resets selection on modal close', async () => {
+    const user = userEvent.setup();
+    render(
+      <ManagementView
+        currentUser={mockAdminUser}
+        sessionEpoch={1}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Headquarters')).toBeInTheDocument();
+    });
+
+    const devicesTab = screen.getByRole('tab', { name: /devices/i });
+    await user.click(devicesTab);
+
+    await waitFor(() => {
+      expect(screen.getByText('Turnstile A')).toBeInTheDocument();
+    });
+
+    // Click Edit on Turnstile A
+    const editBtn = screen.getByRole('button', { name: /edit device turnstile a/i });
+    await user.click(editBtn);
+
+    // Modal opens in Edit mode with populated fields
+    expect(screen.getByRole('heading', { name: /edit device/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/device descriptive name/i)).toHaveValue('Turnstile A');
+    expect(screen.getByLabelText(/device code/i)).toHaveValue('DEV-A');
+    expect(screen.getByLabelText(/serial number/i)).toHaveValue('SN-001');
+    expect(screen.getByLabelText(/hardware model/i)).toHaveValue('ZKTeco Pro');
+
+    // Close modal via Cancel button
+    const cancelBtn = screen.getByRole('button', { name: /cancel/i });
+    await user.click(cancelBtn);
+
+    expect(screen.queryByRole('heading', { name: /edit device/i })).not.toBeInTheDocument();
+
+    // Reopen Edit on the same device (Turnstile A) and verify clean state
+    await user.click(editBtn);
+    expect(screen.getByRole('heading', { name: /edit device/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/device descriptive name/i)).toHaveValue('Turnstile A');
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+
+    // Now click Edit on Backup Reader (switching devices)
+    const editBackupBtn = screen.getByRole('button', { name: /edit device backup reader/i });
+    await user.click(editBackupBtn);
+
+    expect(screen.getByRole('heading', { name: /edit device/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/device descriptive name/i)).toHaveValue('Backup Reader');
+    expect(screen.getByLabelText(/device code/i)).toHaveValue('DEV-BK');
+    expect(screen.getByLabelText(/serial number/i)).toHaveValue('SN-002');
+    expect(screen.getByLabelText(/hardware model/i)).toHaveValue('ZKTeco Mini');
+    expect(screen.getByLabelText(/device lifecycle status/i)).toHaveValue('INACTIVE');
+  });
+
+  it('opens Register Device modal with blank text fields and default office', async () => {
+    const user = userEvent.setup();
+    render(
+      <ManagementView
+        currentUser={mockAdminUser}
+        sessionEpoch={1}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Headquarters')).toBeInTheDocument();
+    });
+
+    const devicesTab = screen.getByRole('tab', { name: /devices/i });
+    await user.click(devicesTab);
+
+    await waitFor(() => {
+      expect(screen.getByText('Turnstile A')).toBeInTheDocument();
+    });
+
+    const registerBtn = screen.getByRole('button', { name: /\+ register device/i });
+    await user.click(registerBtn);
+
+    expect(screen.getByRole('heading', { name: /register new device/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/assigned office location/i)).toHaveValue('1');
+    expect(screen.getByLabelText(/device descriptive name/i)).toHaveValue('');
+    expect(screen.getByLabelText(/device code/i)).toHaveValue('');
+    expect(screen.getByLabelText(/serial number/i)).toHaveValue('');
+    expect(screen.getByLabelText(/hardware model/i)).toHaveValue('');
+    expect(screen.getByLabelText(/ip address/i)).toHaveValue('');
+    expect(screen.getByLabelText(/mac address/i)).toHaveValue('');
+    expect(screen.getByLabelText(/device lifecycle status/i)).toHaveValue('ACTIVE');
+    expect(screen.getByLabelText(/active terminal/i)).toBeChecked();
+
+    // Close modal via Cancel
+    const cancelBtn = screen.getByRole('button', { name: /cancel/i });
+    await user.click(cancelBtn);
+    expect(screen.queryByRole('heading', { name: /register new device/i })).not.toBeInTheDocument();
+  });
+
   it('switches to Assignments tab and displays employee assignments with date ranges and primary status', async () => {
     const user = userEvent.setup();
     render(

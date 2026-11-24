@@ -108,13 +108,15 @@ class DailyPunchDetail(BaseModel):
     id: int
     punch_type: str
     event_timestamp: datetime
-    device_id: int
+    device_id: int | None = None
     device_name: str | None = None
     device_code: str | None = None
-    office_id: int
+    office_id: int | None = None
     office_name: str | None = None
     office_code: str | None = None
-    is_roaming: bool
+    is_roaming: bool = False
+    is_corrected: bool = False
+    correction_id: int | None = None
 
 
 class AttendanceReviewCreate(BaseModel):
@@ -244,6 +246,8 @@ class AttendanceReportItem(BaseModel):
     has_roaming: bool = False
     roaming_count: int = Field(ge=0, description="Number of roaming punches on this date")
     status: str = Field(description="Attendance status: 'NORMAL', 'REQUIRES_REVIEW', or 'NO_PUNCH'")
+    work_duration_minutes: int | None = Field(default=None, description="Total worked minutes from complete CHECK_IN/CHECK_OUT pairs")
+    work_duration_formatted: str | None = Field(default=None, description="Formatted duration (e.g. '8h 30m') or None if incomplete")
 
 
 class AttendanceReportSummary(BaseModel):
@@ -260,6 +264,8 @@ class AttendanceReportSummary(BaseModel):
     roaming_punch_count: int = Field(ge=0, description="Total roaming punch events recorded during the period")
     total_records: int = Field(ge=0, description="Total report line items generated")
     eligible_employee_count: int = Field(ge=0, description="Total eligible employee population in scope")
+    total_worked_hours: float = Field(default=0.0, ge=0, description="Total worked hours across all completed sessions in report scope")
+    average_daily_worked_hours: float | None = Field(default=None, ge=0, description="Average worked hours per day with completed duration")
 
 
 class AttendanceReportResponse(BaseModel):
@@ -301,3 +307,94 @@ class AttendanceExceptionListResponse(BaseModel):
     date: str
     total_exceptions: int
     items: list[AttendanceExceptionItem]
+
+
+class AttendanceCorrectionCreate(BaseModel):
+    """Payload schema for submitting an attendance correction request."""
+
+    employee_id: int = Field(gt=0, description="Target employee ID")
+    attendance_date: date = Field(description="Attendance date (YYYY-MM-DD)")
+    correction_type: Literal["MISSING_CHECK_IN", "MISSING_CHECK_OUT", "TIMESTAMP_ADJUSTMENT"] = Field(
+        description="Type of attendance correction"
+    )
+    proposed_timestamp: datetime = Field(description="Proposed punch timestamp with timezone")
+    original_event_id: int | None = Field(
+        default=None,
+        description="Original raw event ID (mandatory for TIMESTAMP_ADJUSTMENT)",
+    )
+    reason: str = Field(
+        min_length=5,
+        max_length=1000,
+        description="Mandatory business reason justifying the correction",
+    )
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=100,
+        description="Unique client-supplied idempotency key for safe retries",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, v: str) -> str:
+        s = v.strip()
+        if len(s) < 5:
+            raise ValueError("Reason must be at least 5 characters.")
+        return s
+
+
+class AttendanceCorrectionReview(BaseModel):
+    """Payload schema for manager/admin approval or rejection of an attendance correction."""
+
+    status: Literal["APPROVED", "REJECTED"] = Field(description="Review decision")
+    review_notes: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Optional decision notes explaining the approval or rejection",
+    )
+
+    @field_validator("review_notes")
+    @classmethod
+    def sanitize_review_notes(cls, v: str | None) -> str | None:
+        if v is not None:
+            s = v.strip()
+            return s if s else None
+        return None
+
+
+class AttendanceCorrectionResponse(BaseModel):
+    """Representation of an attendance correction request and its review disposition."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    employee_id: int
+    employee_name: str | None = None
+    employee_code: str | None = None
+    department: str | None = None
+    attendance_date: date
+    correction_type: str
+    proposed_timestamp: datetime
+    original_event_id: int | None = None
+    reason: str
+    status: str
+    requested_by_user_id: int
+    requester_name: str | None = None
+    requester_email: str | None = None
+    reviewed_by_user_id: int | None = None
+    reviewer_name: str | None = None
+    reviewer_email: str | None = None
+    review_notes: str | None = None
+    reviewed_at: datetime | None = None
+    idempotency_key: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AttendanceCorrectionListResponse(BaseModel):
+    """Paginated list response envelope for attendance correction requests."""
+
+    items: list[AttendanceCorrectionResponse]
+    total: int
+    limit: int
+    offset: int
+

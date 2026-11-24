@@ -2,6 +2,8 @@ import concurrent.futures
 import io
 import socket
 import sys
+import threading
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -501,50 +503,80 @@ def test_concurrent_bootstrap_attempts_independent_connections(test_engine):
 
     Exactly one process succeeds in creating the initial account; the competing process fails.
     """
-    admin_email = "concurrent_admin@example.com"
+    admin_email = f"concurrent_admin_{uuid.uuid4().hex}@example.com"
     pw_hash = hash_password("SuperSecretPass123!")
 
-    # Verify database is empty of this email initially
-    with Session(bind=test_engine) as check_session:
-        check_session.execute(delete(AuditLog).where(AuditLog.target_type == "user"))
-        check_session.execute(delete(User).where(func.lower(User.email) == admin_email))
-        check_session.commit()
+    # Thread-safe synchronization events to guarantee deterministic race condition:
+    # 1. winner_holding_lock: Set by Worker One once execute_bootstrap has acquired the advisory lock
+    #    and finished inside its savepoint, while its outer transaction remains open.
+    # 2. loser_attempted: Set by Worker Two once it attempts execute_bootstrap, is blocked by the
+    #    advisory lock, and catches BootstrapLockError.
+    winner_holding_lock = threading.Event()
+    loser_attempted = threading.Event()
 
-    def attempt_bootstrap(name: str):
-        with Session(bind=test_engine) as session:
+    def attempt_bootstrap(name: str, is_primary: bool) -> tuple[int, int]:
+        # Each worker creates its own session bound to test_engine in its own thread
+        session = Session(bind=test_engine)
+        exit_code = 1
+        verified_count = 0
+        try:
+            # Keep outer transaction open so execute_bootstrap runs inside its nested savepoint
+            session.begin()
             try:
+                if not is_primary:
+                    # Competing worker waits until winning worker is actively holding the open transaction & advisory lock
+                    if not winner_holding_lock.wait(timeout=10.0):
+                        raise TimeoutError("Timed out waiting for winning worker to acquire lock")
+
                 execute_bootstrap(
                     session=session,
                     full_name=name,
                     email=admin_email,
                     password_hash=pw_hash,
                 )
-                return 0
-            except (BootstrapLockError, BootstrapRefusedError, IntegrityError):
-                return 1
+                exit_code = 0
 
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            f1 = executor.submit(attempt_bootstrap, "Worker One")
-            f2 = executor.submit(attempt_bootstrap, "Worker Two")
-            results = [f1.result(), f2.result()]
+                # Winning worker signals that advisory lock is held, then waits for loser to attempt
+                if is_primary:
+                    winner_holding_lock.set()
+                    if not loser_attempted.wait(timeout=10.0):
+                        raise TimeoutError("Timed out waiting for competing worker to attempt bootstrap")
 
-        # Exactly one thread succeeds (code 0) and one thread is rejected (code 1)
-        assert results.count(0) == 1, f"Expected exactly 1 success, got results: {results}"
-        assert results.count(1) == 1, f"Expected exactly 1 failure, got results: {results}"
+                # Verify within this worker thread that exactly one user account was created before rollback
+                verified_count = session.scalar(
+                    select(func.count(User.id)).where(func.lower(User.email) == admin_email)
+                ) or 0
+            except BootstrapLockError:
+                exit_code = 1
+                if not is_primary:
+                    # Signal that the competing worker was rejected under the lock
+                    loser_attempted.set()
+            except (BootstrapRefusedError, IntegrityError):
+                exit_code = 1
+        finally:
+            # Roll back and close each worker session in its own worker thread
+            try:
+                session.rollback()
+            finally:
+                session.close()
 
-        # Verify exactly one user account was committed to PostgreSQL
-        with Session(bind=test_engine) as verify_session:
-            created_count = verify_session.scalar(
-                select(func.count(User.id)).where(func.lower(User.email) == admin_email)
-            )
-            assert created_count == 1
-    finally:
-        # Strictly clean up created test records from mbiotrack_test
-        with Session(bind=test_engine) as cleanup_session:
-            cleanup_session.execute(delete(AuditLog).where(AuditLog.target_type == "user"))
-            cleanup_session.execute(delete(User).where(func.lower(User.email) == admin_email))
-            cleanup_session.commit()
+        # Return the worker's status and verification result to the main thread
+        return exit_code, verified_count
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(attempt_bootstrap, "Worker One", True)
+        f2 = executor.submit(attempt_bootstrap, "Worker Two", False)
+        results = [f1.result(), f2.result()]
+
+    exit_codes = [r[0] for r in results]
+    verified_counts = [r[1] for r in results]
+
+    # Exactly one thread succeeds (code 0) and one thread is rejected (code 1)
+    assert exit_codes.count(0) == 1, f"Expected exactly 1 success, got exit codes: {exit_codes}"
+    assert exit_codes.count(1) == 1, f"Expected exactly 1 failure, got exit codes: {exit_codes}"
+
+    # Verify the successful worker created exactly one user before rolling back
+    assert max(verified_counts) == 1, f"Expected winning worker to verify 1 created user, got: {verified_counts}"
 
 
 def test_no_secret_or_credential_leakage_in_output(monkeypatch):

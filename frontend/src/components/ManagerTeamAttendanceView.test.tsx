@@ -16,6 +16,8 @@ vi.mock('../api/attendanceApi', () => ({
   getTeamAttendanceSummary: vi.fn(),
   acknowledgeAttendanceException: vi.fn(),
   getAttendanceReviews: vi.fn(),
+  getAttendanceCorrections: vi.fn(),
+  reviewAttendanceCorrection: vi.fn(),
 }));
 
 const mockTeamAttendanceData: DailyAttendanceOperationsResponse = {
@@ -128,9 +130,17 @@ describe('ManagerTeamAttendanceView', () => {
   const mockGetTeamSummary = vi.mocked(attendanceApi.getTeamAttendanceSummary);
   const mockAcknowledgeException = vi.mocked(attendanceApi.acknowledgeAttendanceException);
   const mockGetAttendanceReviews = vi.mocked(attendanceApi.getAttendanceReviews);
+  const mockGetCorrections = vi.mocked(attendanceApi.getAttendanceCorrections);
+  const mockReviewCorrection = vi.mocked(attendanceApi.reviewAttendanceCorrection);
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetCorrections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    });
   });
 
   describe('Authorization and Access Control', () => {
@@ -845,6 +855,239 @@ describe('ManagerTeamAttendanceView', () => {
       expect(screen.getByText(/Audit Trail: Past Review Actions/i)).toBeInTheDocument();
       expect(screen.getByText(/"Updated evening approval note"/i)).toBeInTheDocument();
       expect(screen.getByText(/"Prior morning note"/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Attendance Correction Requests Workflow & Anti-Self-Approval', () => {
+    const mockCorrectionsData = [
+      {
+        id: 501,
+        employee_id: 101, // Alice InTeam
+        employee_name: 'Alice InTeam',
+        employee_code: 'EMP-001',
+        department: 'Engineering',
+        attendance_date: '2026-11-15',
+        correction_type: 'MISSING_CHECK_OUT' as const,
+        proposed_timestamp: '2026-11-15T18:00:00Z',
+        original_event_id: null,
+        reason: 'Device turnstile failed to register check-out',
+        status: 'PENDING' as const,
+        requested_by_user_id: 10, // Not mockManagerUser (id: 3)
+        requester_name: 'Alice InTeam',
+        requester_email: 'alice@example.com',
+        reviewed_by_user_id: null,
+        reviewer_name: null,
+        reviewer_email: null,
+        review_notes: null,
+        reviewed_at: null,
+        idempotency_key: 'corr-501',
+        created_at: '2026-11-15T18:30:00Z',
+        updated_at: '2026-11-15T18:30:00Z',
+      },
+      {
+        id: 502,
+        employee_id: 2, // Matches mockManagerUser.employee_id (id: 2) -> Self request!
+        employee_name: 'Bob Manager',
+        employee_code: 'MGR-001',
+        department: 'Engineering',
+        attendance_date: '2026-11-15',
+        correction_type: 'MISSING_CHECK_IN' as const,
+        proposed_timestamp: '2026-11-15T09:00:00Z',
+        original_event_id: null,
+        reason: 'Badge forgotten in car, check-in punch missed',
+        status: 'PENDING' as const,
+        requested_by_user_id: 3, // Matches mockManagerUser.id (id: 3) -> Self request!
+        requester_name: 'Bob Manager',
+        requester_email: 'manager@mbiotrack.local',
+        reviewed_by_user_id: null,
+        reviewer_name: null,
+        reviewer_email: null,
+        review_notes: null,
+        reviewed_at: null,
+        idempotency_key: 'corr-502',
+        created_at: '2026-11-15T19:00:00Z',
+        updated_at: '2026-11-15T19:00:00Z',
+      },
+    ];
+
+    it('switches between Team Daily Attendance and Correction Requests tabs', async () => {
+      const user = userEvent.setup();
+      mockGetTeamSummary.mockResolvedValueOnce(mockTeamAttendanceData);
+      mockGetCorrections.mockResolvedValueOnce({
+        items: mockCorrectionsData,
+        total: 2,
+        limit: 50,
+        offset: 0,
+      });
+
+      render(
+        <ManagerTeamAttendanceView
+          currentUser={mockManagerUser}
+          sessionEpoch={1}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice InTeam')).toBeInTheDocument();
+      });
+
+      // Tab button should have pending count badge
+      const correctionsTabBtn = screen.getByRole('button', { name: /Correction Requests/i });
+      expect(correctionsTabBtn).toBeInTheDocument();
+
+      await user.click(correctionsTabBtn);
+
+      // Verify Correction Requests table is visible
+      expect(screen.getByLabelText('Attendance Correction Requests Table')).toBeInTheDocument();
+      expect(screen.getByText('Device turnstile failed to register check-out')).toBeInTheDocument();
+    });
+
+    it('enforces anti-self-approval rule by disabling approval on own requests', async () => {
+      const user = userEvent.setup();
+      mockGetTeamSummary.mockResolvedValueOnce(mockTeamAttendanceData);
+      mockGetCorrections.mockResolvedValueOnce({
+        items: mockCorrectionsData,
+        total: 2,
+        limit: 50,
+        offset: 0,
+      });
+
+      render(
+        <ManagerTeamAttendanceView
+          currentUser={mockManagerUser} // id: 3, employee_id: 2
+          sessionEpoch={1}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice InTeam')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: /Correction Requests/i }));
+
+      // Alice's request (other employee): Approve and Reject buttons available
+      expect(screen.getByRole('button', { name: /^Approve$/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Reject$/i })).toBeInTheDocument();
+
+      // Bob's request (self request): Anti-self-approval protection prohibits review
+      expect(screen.getByText(/Self-Request \(Review Prohibited\)/i)).toBeInTheDocument();
+    });
+
+    it('allows manager to approve another employee correction request with optional notes', async () => {
+      const user = userEvent.setup();
+      mockGetTeamSummary.mockResolvedValueOnce(mockTeamAttendanceData);
+      mockGetCorrections.mockResolvedValueOnce({
+        items: mockCorrectionsData,
+        total: 2,
+        limit: 50,
+        offset: 0,
+      });
+      mockReviewCorrection.mockResolvedValueOnce({
+        ...mockCorrectionsData[0],
+        status: 'APPROVED',
+        reviewer_name: 'Bob Manager',
+        review_notes: 'Approved based on turnstile CCTV logs',
+      });
+
+      render(
+        <ManagerTeamAttendanceView
+          currentUser={mockManagerUser}
+          sessionEpoch={1}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice InTeam')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: /Correction Requests/i }));
+
+      const approveBtn = screen.getByRole('button', { name: /^Approve$/i });
+      await user.click(approveBtn);
+
+      // Modal appears
+      expect(screen.getByRole('heading', { name: /Approve Attendance Correction/i })).toBeInTheDocument();
+      expect(screen.getAllByText(/Device turnstile failed to register check-out/i).length).toBeGreaterThan(0);
+
+      const notesInput = screen.getByLabelText(/Supervisor Review Notes/i);
+      await user.type(notesInput, 'Approved based on turnstile CCTV logs');
+
+      const confirmBtn = screen.getByRole('button', { name: /Confirm Approval/i });
+      await user.click(confirmBtn);
+
+      await waitFor(() => {
+        expect(mockReviewCorrection).toHaveBeenCalledWith(501, {
+          status: 'APPROVED',
+          review_notes: 'Approved based on turnstile CCTV logs',
+        });
+      });
+    });
+
+    it('displays missing-punch review reason in team view when review_status is REQUIRES_REVIEW', async () => {
+      const teamDataWithMissingPunch: DailyAttendanceOperationsResponse = {
+        ...mockTeamAttendanceData,
+        employees: [
+          {
+            ...mockTeamAttendanceData.employees[0],
+            review_status: 'REQUIRES_REVIEW',
+            review_reason: 'Incomplete attendance: Missing CHECK_OUT',
+          },
+        ],
+      };
+      mockGetTeamSummary.mockResolvedValueOnce(teamDataWithMissingPunch);
+
+      render(
+        <ManagerTeamAttendanceView
+          currentUser={mockManagerUser}
+          sessionEpoch={1}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice InTeam')).toBeInTheDocument();
+      });
+
+      // Verify the missing punch reason badge is shown
+      expect(screen.getByText(/⚠️ Incomplete attendance: Missing CHECK_OUT/i)).toBeInTheDocument();
+    });
+
+    it('renders corrected punch indicator when punch.is_corrected is true', async () => {
+      const teamDataWithCorrectedPunch: DailyAttendanceOperationsResponse = {
+        ...mockTeamAttendanceData,
+        employees: [
+          {
+            ...mockTeamAttendanceData.employees[0],
+            punches: [
+              {
+                ...mockTeamAttendanceData.employees[0].punches[0],
+                is_corrected: true,
+                correction_id: 501,
+              },
+            ],
+          },
+        ],
+      };
+      mockGetTeamSummary.mockResolvedValueOnce(teamDataWithCorrectedPunch);
+
+      render(
+        <ManagerTeamAttendanceView
+          currentUser={mockManagerUser}
+          sessionEpoch={1}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice InTeam')).toBeInTheDocument();
+      });
+
+      // Main table should have corrected indicator
+      expect(screen.getAllByTitle('Corrected punch').length).toBeGreaterThan(0);
+
+      // Open detail modal and verify Corrected badge
+      const viewBtn = screen.getByTitle(/Inspect punch details for Alice InTeam/i);
+      await userEvent.click(viewBtn);
+
+      expect(screen.getByText('Corrected')).toBeInTheDocument();
     });
   });
 });

@@ -10,6 +10,7 @@ from app.schemas.user import (
     PasswordResetRequest,
     UserAccountResponse,
     UserCreate,
+    UserRoleUpdate,
     UserStatusUpdate,
 )
 from app.services.user_service import UserService
@@ -66,6 +67,21 @@ def update_user_status(
     current_user: User = Depends(require_role("ADMIN")),
 ):
     return UserService.update_user_status(
+        db=db,
+        user_id=user_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@router.patch("/{user_id}/role", response_model=UserAccountResponse)
+def update_user_role(
+    user_id: int,
+    payload: UserRoleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    return UserService.update_user_role(
         db=db,
         user_id=user_id,
         payload=payload,

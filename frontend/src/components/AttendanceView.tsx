@@ -8,8 +8,10 @@ import {
 } from '../api/attendanceApi';
 import { ApiError } from '../api/apiError';
 import { getOffices } from '../api/officeApi';
+import { AttendanceCorrectionModal } from './AttendanceCorrectionModal';
 import { PunchModal } from './PunchModal';
 import type {
+  AttendanceCorrectionType,
   AttendanceEventDetail,
   AttendanceFilterParams,
   AttendancePunchCreatePayload,
@@ -17,6 +19,7 @@ import type {
   AttendanceReportResponse,
   DailyAttendanceOperationsResponse,
   DailyOperationsFilterParams,
+  DailyPunchDetail,
   EmployeeDailyAttendanceItem,
 } from '../types/attendance';
 import type { User } from '../types/auth';
@@ -53,6 +56,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 }) => {
   const isEmployee = currentUser.role === 'EMPLOYEE';
   const isAdmin = currentUser.role === 'ADMIN';
+  const isManager = currentUser.role === 'MANAGER';
 
   // Active top-level subtab: 'operations' (Daily Operations) vs 'reports' (Reports & Export) vs 'events' (Raw Event Feed)
   const [activeTab, setActiveTab] = useState<'operations' | 'reports' | 'events'>(initialTab);
@@ -111,6 +115,18 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const [isPunchSubmitting, setIsPunchSubmitting] = useState<boolean>(false);
   const [punchServerError, setPunchServerError] = useState<string | null>(null);
   const [punchFeedback, setPunchFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Attendance Correction Modal State (Phase 2)
+  const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState<boolean>(false);
+  const [correctionTarget, setCorrectionTarget] = useState<{
+    employeeId: number;
+    employeeName: string;
+    employeeCode: string;
+    date: string;
+    type: AttendanceCorrectionType;
+    originalEventId?: number | null;
+    punches: DailyPunchDetail[];
+  } | null>(null);
 
   // Auto-dismiss punch feedback notification
   useEffect(() => {
@@ -217,12 +233,14 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const [reportStartDate, setReportStartDate] = useState<string>(() => getNDaysAgoUtc(6));
   const [reportEndDate, setReportEndDate] = useState<string>(getTodayUtc);
   const [reportOfficeId, setReportOfficeId] = useState<string>('');
+  const [reportDepartment, setReportDepartment] = useState<string>('');
   const [reportEmployeeId, setReportEmployeeId] = useState<string>('');
 
   const [appliedReportFilters, setAppliedReportFilters] = useState<{
     start_date?: string;
     end_date?: string;
     office_id?: number;
+    department?: string;
     employee_id?: number;
   }>(() => ({
     start_date: getNDaysAgoUtc(6),
@@ -238,6 +256,12 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const [isExportingCsv, setIsExportingCsv] = useState<boolean>(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
+
+  const managerDepartment = useMemo(() => {
+    if (!isManager || !reportData) return '';
+    const itemWithDept = reportData.items.find((it) => it.department);
+    return itemWithDept?.department || '';
+  }, [isManager, reportData]);
 
   // Load Report data when filters, pagination, or tab changes
   useEffect(() => {
@@ -255,6 +279,9 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
     if (appliedReportFilters.office_id !== undefined) {
       params.office_id = appliedReportFilters.office_id;
+    }
+    if (isAdmin && appliedReportFilters.department) {
+      params.department = appliedReportFilters.department;
     }
     if (!isEmployee && appliedReportFilters.employee_id !== undefined) {
       params.employee_id = appliedReportFilters.employee_id;
@@ -278,7 +305,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [activeTab, appliedReportFilters, reportOffset, isEmployee, reportReloadTrigger]);
+  }, [activeTab, appliedReportFilters, reportOffset, isEmployee, isAdmin, reportReloadTrigger]);
 
   const handleApplyReportFilters = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -322,6 +349,10 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       }
     }
 
+    if (isAdmin && reportDepartment.trim()) {
+      nextApplied.department = reportDepartment.trim();
+    }
+
     if (!isEmployee && reportEmployeeId.trim()) {
       const parsed = parseInt(reportEmployeeId.trim(), 10);
       if (!isNaN(parsed) && parsed > 0) {
@@ -338,6 +369,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
     setReportStartDate(sDate);
     setReportEndDate(eDate);
     setReportOfficeId('');
+    setReportDepartment('');
     setReportEmployeeId('');
     setReportOffset(0);
     setValidationWarning(null);
@@ -353,16 +385,19 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       reportStartDate !== defaultReportStartDate ||
       reportEndDate !== defaultReportEndDate ||
       Boolean(reportOfficeId.trim()) ||
+      Boolean(reportDepartment.trim()) ||
       Boolean(reportEmployeeId.trim()) ||
       appliedReportFilters.start_date !== defaultReportStartDate ||
       appliedReportFilters.end_date !== defaultReportEndDate ||
       appliedReportFilters.office_id !== undefined ||
+      appliedReportFilters.department !== undefined ||
       appliedReportFilters.employee_id !== undefined
     );
   }, [
     reportStartDate,
     reportEndDate,
     reportOfficeId,
+    reportDepartment,
     reportEmployeeId,
     appliedReportFilters,
     defaultReportStartDate,
@@ -380,6 +415,9 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       };
       if (appliedReportFilters.office_id !== undefined) {
         params.office_id = appliedReportFilters.office_id;
+      }
+      if (isAdmin && appliedReportFilters.department) {
+        params.department = appliedReportFilters.department;
       }
       if (!isEmployee && appliedReportFilters.employee_id !== undefined) {
         params.employee_id = appliedReportFilters.employee_id;
@@ -636,7 +674,13 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   ) => {
     setPunchServerError(null);
     setPunchModalDefaultType(type || employeePunchState.recommendedAction);
-    setPunchTargetEmployee(target || (currentUser.employee_id ? { id: currentUser.employee_id, name: currentUser.full_name, code: '' } : null));
+    setPunchTargetEmployee(
+      target !== undefined
+        ? target
+        : currentUser.employee_id
+        ? { id: currentUser.employee_id, name: currentUser.full_name, code: '' }
+        : null
+    );
     setIsPunchModalOpen(true);
   };
 
@@ -926,7 +970,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={() => handleOpenPunchModal()}
+                  onClick={() => handleOpenPunchModal(undefined, null)}
                   title="Record punch for an employee"
                 >
                   ⏱️ Manual Punch...
@@ -1273,7 +1317,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
                             {/* Actions / Inspect */}
                             <td className="attendance-cell-actions">
-                              {emp.punches && emp.punches.length > 0 ? (
+                              {emp.punches && emp.punches.length > 0 && (
                                 <button
                                   type="button"
                                   className="btn btn-secondary btn-sm"
@@ -1282,7 +1326,31 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                                 >
                                   Inspect Punches
                                 </button>
-                              ) : (
+                              )}
+                              {emp.review_status === 'REQUIRES_REVIEW' && (
+                                <button
+                                  type="button"
+                                  className="btn btn-outline-primary btn-sm"
+                                  style={{ marginLeft: '0.25rem' }}
+                                  onClick={() => {
+                                    setCorrectionTarget({
+                                      employeeId: emp.employee_id,
+                                      employeeName: emp.employee_name,
+                                      employeeCode: emp.employee_code,
+                                      date: opData?.summary.date || getTodayUtc(),
+                                      type: emp.review_reason?.includes('Missing CHECK_IN')
+                                        ? 'MISSING_CHECK_IN'
+                                        : 'MISSING_CHECK_OUT',
+                                      punches: emp.punches,
+                                    });
+                                    setIsCorrectionModalOpen(true);
+                                  }}
+                                  aria-label={`Request correction for ${emp.employee_name}`}
+                                >
+                                  Correct
+                                </button>
+                              )}
+                              {(!emp.punches || emp.punches.length === 0) && emp.review_status !== 'REQUIRES_REVIEW' && (
                                 <span className="text-muted" style={{ fontSize: '0.75rem' }}>
                                   No punches
                                 </span>
@@ -1389,6 +1457,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                         <th scope="col">Office</th>
                         <th scope="col">Device</th>
                         <th scope="col">Assignment Status</th>
+                        <th scope="col">Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1405,6 +1474,23 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                             >
                               {p.punch_type}
                             </span>
+                            {p.is_corrected && (
+                              <span
+                                className="badge badge-info"
+                                style={{
+                                  marginLeft: '0.5rem',
+                                  fontSize: '0.75rem',
+                                  backgroundColor: '#e0f2fe',
+                                  color: '#0369a1',
+                                  padding: '0.15rem 0.4rem',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                }}
+                                title="Manually corrected punch"
+                              >
+                                Corrected
+                              </span>
+                            )}
                           </td>
                           <td>{p.office_name || `Office #${p.office_id}`}</td>
                           <td>{p.device_name || `Device #${p.device_id}`}</td>
@@ -1425,6 +1511,28 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                               </span>
                             )}
                           </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-outline-primary btn-sm"
+                              onClick={() => {
+                                setCorrectionTarget({
+                                  employeeId: inspectingEmployee.employee_id,
+                                  employeeName: inspectingEmployee.employee_name,
+                                  employeeCode: inspectingEmployee.employee_code,
+                                  date: opData?.summary.date || getTodayUtc(),
+                                  type: 'TIMESTAMP_ADJUSTMENT',
+                                  originalEventId: p.id,
+                                  punches: inspectingEmployee.punches,
+                                });
+                                setInspectingEmployee(null);
+                                setIsCorrectionModalOpen(true);
+                              }}
+                              aria-label={`Adjust ${p.punch_type} punch at ${formatTimeOnly(p.event_timestamp)}`}
+                            >
+                              Adjust
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1439,7 +1547,39 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                   </div>
                 </div>
 
-                <div className="modal-footer" style={{ padding: '0.875rem 1.25rem', justifyContent: 'flex-end' }}>
+                <div className="modal-footer" style={{ padding: '0.875rem 1.25rem', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline-primary"
+                    onClick={() => {
+                      let initialType: AttendanceCorrectionType = 'TIMESTAMP_ADJUSTMENT';
+                      let defaultEventId: number | null = null;
+                      if (inspectingEmployee.review_reason?.includes('Missing CHECK_IN')) {
+                        initialType = 'MISSING_CHECK_IN';
+                      } else if (inspectingEmployee.review_reason?.includes('Missing CHECK_OUT')) {
+                        initialType = 'MISSING_CHECK_OUT';
+                      } else if (inspectingEmployee.punches && inspectingEmployee.punches.length > 0) {
+                        initialType = 'TIMESTAMP_ADJUSTMENT';
+                        defaultEventId = inspectingEmployee.punches[inspectingEmployee.punches.length - 1].id;
+                      } else {
+                        initialType = 'MISSING_CHECK_OUT';
+                      }
+
+                      setCorrectionTarget({
+                        employeeId: inspectingEmployee.employee_id,
+                        employeeName: inspectingEmployee.employee_name,
+                        employeeCode: inspectingEmployee.employee_code,
+                        date: opData?.summary.date || getTodayUtc(),
+                        type: initialType,
+                        originalEventId: defaultEventId,
+                        punches: inspectingEmployee.punches,
+                      });
+                      setInspectingEmployee(null);
+                      setIsCorrectionModalOpen(true);
+                    }}
+                  >
+                    Request Correction
+                  </button>
                   <button
                     type="button"
                     className="btn btn-secondary"
@@ -1587,6 +1727,43 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                       value={reportEmployeeId}
                       onChange={(e) => setReportEmployeeId(e.target.value)}
                       aria-label="Filter by employee ID"
+                    />
+                  </div>
+                )}
+
+                {/* Department Filter (Admin can filter, Manager sees read-only, Employee hidden) */}
+                {isAdmin && (
+                  <div className="filter-field">
+                    <label htmlFor="filter-report-department" className="filter-label">
+                      Department
+                    </label>
+                    <input
+                      id="filter-report-department"
+                      type="text"
+                      className="filter-input"
+                      placeholder="e.g. Engineering"
+                      value={reportDepartment}
+                      onChange={(e) => setReportDepartment(e.target.value)}
+                      aria-label="Filter by department"
+                      data-testid="filter-report-department"
+                    />
+                  </div>
+                )}
+                {isManager && (
+                  <div className="filter-field">
+                    <label htmlFor="filter-report-department-locked" className="filter-label">
+                      Department
+                    </label>
+                    <input
+                      id="filter-report-department-locked"
+                      type="text"
+                      className="filter-input"
+                      value={managerDepartment || 'Assigned Department'}
+                      disabled
+                      readOnly
+                      aria-label="Authorized department"
+                      title="Manager report is restricted to your authorized team department"
+                      data-testid="filter-report-department-locked"
                     />
                   </div>
                 )}
@@ -1752,6 +1929,37 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                     <span className="attendance-summary-label">Report Range</span>
                   </div>
                 </div>
+
+                {/* 6. Total Worked Hours */}
+                <div className="attendance-summary-card" data-testid="card-report-total-hours">
+                  <div className="attendance-summary-icon" aria-hidden="true">
+                    ⏱️
+                  </div>
+                  <div className="attendance-summary-content">
+                    <span className="attendance-summary-value">
+                      {reportData.summary.total_worked_hours !== undefined
+                        ? `${reportData.summary.total_worked_hours}h`
+                        : '0h'}
+                    </span>
+                    <span className="attendance-summary-label">Total Worked Hours</span>
+                  </div>
+                </div>
+
+                {/* 7. Average Daily Worked Hours */}
+                <div className="attendance-summary-card" data-testid="card-report-average-hours">
+                  <div className="attendance-summary-icon" aria-hidden="true">
+                    📊
+                  </div>
+                  <div className="attendance-summary-content">
+                    <span className="attendance-summary-value">
+                      {reportData.summary.average_daily_worked_hours !== undefined &&
+                      reportData.summary.average_daily_worked_hours !== null
+                        ? `${reportData.summary.average_daily_worked_hours}h`
+                        : '—'}
+                    </span>
+                    <span className="attendance-summary-label">Avg Daily Hours</span>
+                  </div>
+                </div>
               </div>
 
               {/* Report Table */}
@@ -1783,22 +1991,24 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 </div>
               ) : (
                 <div className="table-card attendance-table-card">
-                  <div className="table-responsive">
+                  <div className="table-responsive" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                     <table
                       className="mbiotrack-table attendance-table"
                       role="table"
                       aria-label="Attendance report records"
+                      style={{ width: '100%', minWidth: '1220px', tableLayout: 'auto' }}
                     >
                       <thead>
                         <tr>
-                          <th scope="col">Date</th>
-                          <th scope="col">Employee</th>
-                          <th scope="col">Office</th>
-                          <th scope="col">Punch Count</th>
-                          <th scope="col">First Punch</th>
-                          <th scope="col">Last Punch</th>
-                          <th scope="col">Roaming Status</th>
-                          <th scope="col">Status</th>
+                          <th scope="col" style={{ minWidth: '110px', width: '110px', whiteSpace: 'nowrap' }}>Date</th>
+                          <th scope="col" style={{ minWidth: '220px', whiteSpace: 'nowrap' }}>Employee</th>
+                          <th scope="col" style={{ minWidth: '170px', whiteSpace: 'nowrap' }}>Office</th>
+                          <th scope="col" style={{ minWidth: '120px', width: '120px', textAlign: 'center', whiteSpace: 'nowrap' }}>Punch Count</th>
+                          <th scope="col" style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}>First Punch</th>
+                          <th scope="col" style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}>Last Punch</th>
+                          <th scope="col" style={{ minWidth: '130px', width: '130px', whiteSpace: 'nowrap' }}>Work Duration</th>
+                          <th scope="col" style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}>Roaming Status</th>
+                          <th scope="col" style={{ minWidth: '170px', width: '170px', whiteSpace: 'nowrap' }}>Status</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1808,80 +2018,110 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                             data-testid={`report-row-${item.employee_code}-${item.attendance_date}`}
                           >
                             {/* Attendance Date */}
-                            <td className="attendance-cell-date" style={{ whiteSpace: 'nowrap', fontWeight: 500 }}>
+                            <td className="attendance-cell-date" style={{ minWidth: '110px', width: '110px', whiteSpace: 'nowrap', fontWeight: 500 }}>
                               {item.attendance_date}
                             </td>
 
                             {/* Employee */}
-                            <td className="attendance-cell-employee">
-                              <div className="employee-cell-primary">
-                                <span className="employee-name-text">{item.employee_name}</span>
-                                <span className="employee-code-badge" style={{ marginLeft: '0.35rem' }}>
+                            <td className="attendance-cell-employee" style={{ minWidth: '220px' }}>
+                              <div
+                                className="employee-cell-primary"
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
+                              >
+                                <span className="employee-name-text" style={{ fontWeight: 600 }}>{item.employee_name}</span>
+                                <span className="employee-code-badge" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
                                   {item.employee_code}
                                 </span>
                               </div>
                               {item.department && (
-                                <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                                <div className="text-muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap', marginTop: '0.15rem' }}>
                                   {item.department}
                                 </div>
                               )}
                             </td>
 
                             {/* Office */}
-                            <td className="attendance-cell-office">
+                            <td className="attendance-cell-office" style={{ minWidth: '170px' }}>
                               {item.office_name ? (
                                 <div>
-                                  <span>{item.office_name}</span>
+                                  <div style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{item.office_name}</div>
                                   {item.office_code && (
-                                    <div className="text-muted" style={{ fontSize: '0.75rem' }}>
+                                    <div className="text-muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap', marginTop: '0.15rem' }}>
                                       Code: {item.office_code}
                                     </div>
                                   )}
                                 </div>
                               ) : item.office_id ? (
-                                <span>Office #{item.office_id}</span>
+                                <span style={{ whiteSpace: 'nowrap' }}>Office #{item.office_id}</span>
                               ) : (
-                                <span className="text-muted">—</span>
+                                <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>—</span>
                               )}
                             </td>
 
                             {/* Punch Count */}
-                            <td className="attendance-cell-count">
+                            <td
+                              className="attendance-cell-count"
+                              style={{ minWidth: '120px', width: '120px', textAlign: 'center', whiteSpace: 'nowrap' }}
+                            >
                               <span
                                 className={`punch-count-pill ${
-                                  item.punch_count === 0 ? 'count-zero' : 'count-positive'
+                                   item.punch_count === 0 ? 'count-zero' : 'count-positive'
                                 }`}
+                                style={{ display: 'inline-block', whiteSpace: 'nowrap' }}
                               >
                                 {item.punch_count}
                               </span>
                             </td>
 
                             {/* First Punch */}
-                            <td className="attendance-cell-time">
+                            <td className="attendance-cell-time" style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}>
                               {formatTimestamp(item.first_punch)}
                             </td>
 
                             {/* Last Punch */}
-                            <td className="attendance-cell-time">
+                            <td className="attendance-cell-time" style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}>
                               {formatTimestamp(item.last_punch)}
                             </td>
 
+                            {/* Work Duration */}
+                            <td
+                              className="attendance-cell-duration"
+                              data-testid="cell-report-duration"
+                              style={{ minWidth: '130px', width: '130px', whiteSpace: 'nowrap' }}
+                            >
+                              {item.work_duration_formatted ? (
+                                <span
+                                  className="duration-pill"
+                                  style={{ fontWeight: 500, whiteSpace: 'nowrap', display: 'inline-block' }}
+                                >
+                                  {item.work_duration_formatted}
+                                </span>
+                              ) : (
+                                <span className="text-muted" style={{ whiteSpace: 'nowrap' }}>—</span>
+                              )}
+                            </td>
+
                             {/* Roaming Status */}
-                            <td className="attendance-cell-roaming">
+                            <td
+                              className="attendance-cell-roaming"
+                              style={{ minWidth: '160px', width: '160px', whiteSpace: 'nowrap' }}
+                            >
                               {item.has_roaming ? (
                                 <span
                                   className="roaming-badge badge-roaming"
+                                  style={{ whiteSpace: 'nowrap', display: 'inline-block' }}
                                   title="Includes roaming punches outside assigned office"
                                 >
                                   ⚠️ Roaming ({item.roaming_count})
                                 </span>
                               ) : item.status === 'NO_PUNCH' ? (
-                                <span className="text-muted" style={{ fontSize: '0.8125rem' }}>
+                                <span className="text-muted" style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap', display: 'inline-block' }}>
                                   No punch recorded
                                 </span>
                               ) : (
                                 <span
                                   className="roaming-badge badge-assigned"
+                                  style={{ whiteSpace: 'nowrap', display: 'inline-block' }}
                                   title="Terminal matches employee active office assignment"
                                 >
                                   ✓ In-Assignment
@@ -1890,17 +2130,20 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                             </td>
 
                             {/* Status */}
-                            <td className="attendance-cell-status">
+                            <td
+                              className="attendance-cell-status"
+                              style={{ minWidth: '170px', width: '170px', whiteSpace: 'nowrap' }}
+                            >
                               {item.status === 'NO_PUNCH' ? (
-                                <span className="review-status-badge status-nopunch">
+                                <span className="review-status-badge status-nopunch" style={{ whiteSpace: 'nowrap', display: 'inline-block' }}>
                                   ⏳ No Punch Recorded
                                 </span>
                               ) : item.status === 'REQUIRES_REVIEW' ? (
-                                <span className="review-status-badge status-review">
+                                <span className="review-status-badge status-review" style={{ whiteSpace: 'nowrap', display: 'inline-block' }}>
                                   ⚠️ Requires Review
                                 </span>
                               ) : (
-                                <span className="review-status-badge status-normal">
+                                <span className="review-status-badge status-normal" style={{ whiteSpace: 'nowrap', display: 'inline-block' }}>
                                   ✓ Normal
                                 </span>
                               )}
@@ -2317,6 +2560,32 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
         }}
         onSubmit={handlePunchSubmit}
       />
+
+      {/* Attendance Correction Modal (Phase 2) */}
+      {isCorrectionModalOpen && (
+        <AttendanceCorrectionModal
+          isOpen={isCorrectionModalOpen}
+          currentUser={currentUser}
+          targetEmployeeId={correctionTarget?.employeeId ?? currentUser.employee_id}
+          targetEmployeeName={correctionTarget?.employeeName ?? currentUser.full_name}
+          targetEmployeeCode={correctionTarget?.employeeCode}
+          attendanceDate={correctionTarget?.date ?? opData?.summary.date}
+          initialCorrectionType={correctionTarget?.type ?? 'TIMESTAMP_ADJUSTMENT'}
+          initialOriginalEventId={correctionTarget?.originalEventId}
+          availablePunches={correctionTarget?.punches ?? []}
+          onClose={() => {
+            setIsCorrectionModalOpen(false);
+            setCorrectionTarget(null);
+          }}
+          onSuccess={(_corr) => {
+            setPunchFeedback({
+              type: 'success',
+              message: 'Attendance correction request submitted successfully. It will be reviewed by management.',
+            });
+            setOpReloadTrigger((prev) => prev + 1);
+          }}
+        />
+      )}
     </main>
   );
 };

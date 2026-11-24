@@ -19,6 +19,8 @@ export function createMockAuthContext(overrides: Partial<AuthContextValue> = {})
     sessionEpoch: overrides.sessionEpoch !== undefined ? overrides.sessionEpoch : 0,
     login: overrides.login || vi.fn().mockResolvedValue(undefined),
     logout: overrides.logout || vi.fn().mockResolvedValue(undefined),
+    restorationError: overrides.restorationError !== undefined ? overrides.restorationError : null,
+    retryRestoration: overrides.retryRestoration || vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

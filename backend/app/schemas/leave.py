@@ -19,6 +19,10 @@ class LeaveRequestCreate(BaseModel):
         default=None,
         description="Optional for Admin/Manager; ignored/enforced for Employee",
     )
+    optional_holiday_dates: list[date] = Field(
+        default_factory=list,
+        description="Optional holiday dates explicitly selected to be excluded from working days",
+    )
 
     @field_validator("leave_type")
     @classmethod
@@ -75,10 +79,14 @@ class LeaveRequestDetail(BaseModel):
     leave_type: str
     reason: str | None = None
     status: str
+    working_days: int | None = None
     decision_by_user_id: int | None = None
     decision_by_user_name: str | None = None
     decision_notes: str | None = None
     decided_at: datetime | None = None
+    allocated_days: int | None = None
+    available_days_before: int | None = None
+    available_days_after: int | None = None
     created_at: datetime
     updated_at: datetime
 

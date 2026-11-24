@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   cancelLeaveRequest,
+  deleteEntitlementDefault,
+  deleteEntitlementOverride,
+  getEntitlementDefaults,
+  getEntitlementOverrides,
+  getLeaveRequest,
   getLeaveRequests,
   reviewLeaveRequest,
+  setEntitlementDefault,
+  setEntitlementOverride,
   submitLeaveRequest,
 } from '../api/leaveApi';
 import {
@@ -12,10 +19,14 @@ import {
   updateHoliday,
 } from '../api/holidayApi';
 import { getOffices } from '../api/officeApi';
+import { getEmployees } from '../api/employeeApi';
 import { ApiError } from '../api/apiError';
 import type { User } from '../types/auth';
+import type { Employee } from '../types/employee';
 import type { Office } from '../types/office';
 import type {
+  EmployeeLeaveEntitlement,
+  LeaveEntitlementDefault,
   LeaveFilterParams,
   LeaveRequestCreatePayload,
   LeaveRequestDetail,
@@ -32,12 +43,14 @@ import type {
 import { canManageHolidays, canReviewLeave } from '../utils/permissions';
 import { LeaveModal } from './LeaveModal';
 import { HolidayModal } from './HolidayModal';
+import { LeaveEntitlementModal } from './LeaveEntitlementModal';
+import { LeaveBalanceLedgerModal } from './LeaveBalanceLedgerModal';
 import './components.css';
 
 export interface LeaveAndHolidayViewProps {
   currentUser: User;
   sessionEpoch: number;
-  initialSubTab?: 'leaves' | 'holidays';
+  initialSubTab?: 'leaves' | 'holidays' | 'entitlements';
   onNavigateToDirectory?: () => void;
   onNavigateToProfile?: () => void;
   onNavigateToAttendance?: () => void;
@@ -45,6 +58,7 @@ export interface LeaveAndHolidayViewProps {
 }
 
 const PAGE_SIZE = 20;
+const CURRENT_YEAR = new Date().getFullYear();
 
 export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   currentUser,
@@ -62,7 +76,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   const canManageHols = canManageHolidays(currentUser.role);
 
   // Active top-level subtab
-  const [activeSubTab, setActiveSubTab] = useState<'leaves' | 'holidays'>(initialSubTab);
+  const [activeSubTab, setActiveSubTab] = useState<'leaves' | 'holidays' | 'entitlements'>(initialSubTab);
 
   const sessionEpochRef = useRef<number>(sessionEpoch);
   useEffect(() => {
@@ -91,6 +105,91 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   }, [isAdmin, currentUser.role]);
 
   // =========================================================================
+  // Entitlements State (Admin only)
+  // =========================================================================
+  const [entitlementYear, setEntitlementYear] = useState<number>(CURRENT_YEAR);
+  const [entitlementDefaults, setEntitlementDefaults] = useState<LeaveEntitlementDefault[]>([]);
+  const [entitlementOverrides, setEntitlementOverrides] = useState<EmployeeLeaveEntitlement[]>([]);
+  const [employeesList, setEmployeesList] = useState<Employee[]>([]);
+  const [isEntitlementsLoading, setIsEntitlementsLoading] = useState<boolean>(false);
+  const [entitlementsError, setEntitlementsError] = useState<string | null>(null);
+  const [entitlementReloadTrigger, setEntitlementReloadTrigger] = useState<number>(0);
+
+  // Entitlement Modal State
+  const [isEntitlementModalOpen, setIsEntitlementModalOpen] = useState<boolean>(false);
+  const [entitlementModalMode, setEntitlementModalMode] = useState<'default' | 'override'>('default');
+  const [editingDefault, setEditingDefault] = useState<LeaveEntitlementDefault | null>(null);
+  const [editingOverride, setEditingOverride] = useState<EmployeeLeaveEntitlement | null>(null);
+
+  useEffect(() => {
+    if (activeSubTab !== 'entitlements' || !isAdmin) return;
+    let isMounted = true;
+
+    Promise.all([
+      getEntitlementDefaults(entitlementYear),
+      getEntitlementOverrides(entitlementYear),
+      getEmployees(),
+    ])
+      .then(([defaultsData, overridesData, empsData]) => {
+        if (!isMounted) return;
+        setEntitlementDefaults(defaultsData);
+        setEntitlementOverrides(overridesData);
+        setEmployeesList(empsData);
+        setIsEntitlementsLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!isMounted) return;
+        const msg = err instanceof Error ? err.message : 'Failed to load entitlements.';
+        setEntitlementsError(msg);
+        setIsEntitlementsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeSubTab, entitlementYear, entitlementReloadTrigger, isAdmin]);
+
+  const handleSaveDefault = async (payload: { year: number; leave_type: string; allocated_days: number }) => {
+    await setEntitlementDefault(payload);
+    setFeedback({
+      type: 'success',
+      message: `Organization default for ${payload.leave_type} in ${payload.year} saved successfully.`,
+    });
+    setEntitlementReloadTrigger((prev) => prev + 1);
+  };
+
+  const handleDeleteDefault = async (defaultId: number) => {
+    if (!window.confirm('Are you sure you want to delete this organization default entitlement?')) return;
+    try {
+      await deleteEntitlementDefault(defaultId);
+      setFeedback({ type: 'success', message: 'Default entitlement deleted successfully.' });
+      setEntitlementReloadTrigger((prev) => prev + 1);
+    } catch (err: unknown) {
+      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete default.' });
+    }
+  };
+
+  const handleSaveOverride = async (payload: { employee_id: number; year: number; leave_type: string; allocated_days: number }) => {
+    await setEntitlementOverride(payload);
+    setFeedback({
+      type: 'success',
+      message: `Employee entitlement override saved successfully.`,
+    });
+    setEntitlementReloadTrigger((prev) => prev + 1);
+  };
+
+  const handleDeleteOverride = async (overrideId: number) => {
+    if (!window.confirm('Are you sure you want to delete this employee entitlement override?')) return;
+    try {
+      await deleteEntitlementOverride(overrideId);
+      setFeedback({ type: 'success', message: 'Employee override deleted successfully.' });
+      setEntitlementReloadTrigger((prev) => prev + 1);
+    } catch (err: unknown) {
+      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to delete override.' });
+    }
+  };
+
+  // =========================================================================
   // 1. Leave Requests State
   // =========================================================================
   const [leaveFilterStatus, setLeaveFilterStatus] = useState<string>('ALL');
@@ -115,6 +214,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState<boolean>(false);
   const [isLeaveSubmitting, setIsLeaveSubmitting] = useState<boolean>(false);
   const [leaveModalError, setLeaveModalError] = useState<string | null>(null);
+  const [ledgerTarget, setLedgerTarget] = useState<{ id: number; name?: string | null } | null>(null);
 
   // Review / Decision Modal (Approve or Reject)
   const [reviewingRequest, setReviewingRequest] = useState<LeaveRequestDetail | null>(null);
@@ -122,6 +222,24 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   const [reviewNotes, setReviewNotes] = useState<string>('');
   const [isReviewSubmitting, setIsReviewSubmitting] = useState<boolean>(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+
+  const reviewingRequestId = reviewingRequest?.id;
+  const reviewingRequestAllocatedDays = reviewingRequest?.allocated_days;
+
+  useEffect(() => {
+    if (!reviewingRequestId) return;
+    let isMounted = true;
+    if (reviewingRequestAllocatedDays === undefined || reviewingRequestAllocatedDays === null) {
+      getLeaveRequest(reviewingRequestId)
+        .then((detail) => {
+          if (isMounted) setReviewingRequest(detail);
+        })
+        .catch(() => {});
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [reviewingRequestId, reviewingRequestAllocatedDays]);
 
   // Cancel Modal
   const [cancellingRequest, setCancellingRequest] = useState<LeaveRequestDetail | null>(null);
@@ -396,15 +514,11 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
   }, [leaveData]);
 
   // Helpers
-  const formatDuration = (start: string, end: string) => {
-    try {
-      const d1 = new Date(start + 'T00:00:00Z');
-      const d2 = new Date(end + 'T00:00:00Z');
-      const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-      return diffDays === 1 ? '1 day' : `${diffDays} days`;
-    } catch {
-      return '';
+  const formatWorkingDays = (days: number | null | undefined) => {
+    if (days !== null && days !== undefined) {
+      return days === 1 ? '1 working day' : `${days} working days`;
     }
+    return 'Legacy — duration unavailable';
   };
 
   return (
@@ -502,6 +616,23 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
             </button>
           )}
 
+          {activeSubTab === 'leaves' && isEmployee && currentUser.employee_id && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() =>
+                setLedgerTarget({
+                  id: currentUser.employee_id!,
+                  name: currentUser.full_name || 'My Balance History',
+                })
+              }
+              data-testid="view-my-balance-history-btn"
+              title="View your leave balance transaction history"
+            >
+              📜 Balance History
+            </button>
+          )}
+
           {activeSubTab === 'holidays' && canManageHols && (
             <button
               type="button"
@@ -535,8 +666,10 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
             onClick={() => {
               if (activeSubTab === 'leaves') {
                 setLeaveReloadTrigger((prev) => prev + 1);
-              } else {
+              } else if (activeSubTab === 'holidays') {
                 setHolidayReloadTrigger((prev) => prev + 1);
+              } else {
+                setEntitlementReloadTrigger((prev) => prev + 1);
               }
             }}
             title="Refresh current view"
@@ -614,6 +747,18 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
         >
           📅 Holiday Calendar
         </button>
+        {isAdmin && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSubTab === 'entitlements'}
+            className={`attendance-tab-btn ${activeSubTab === 'entitlements' ? 'active' : ''}`}
+            onClick={() => setActiveSubTab('entitlements')}
+            data-testid="tab-leave-entitlements"
+          >
+            📋 Leave Entitlements
+          </button>
+        )}
       </div>
 
       {/* =================================================================== */}
@@ -762,19 +907,35 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                   <label htmlFor="leave-emp-id-filter" style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b' }}>
                     Employee ID
                   </label>
-                  <input
-                    id="leave-emp-id-filter"
-                    type="number"
-                    placeholder="e.g. 1"
-                    className="filter-select"
-                    style={{ width: '110px' }}
-                    value={leaveFilterEmployeeId}
-                    onChange={(e) => {
-                      setLeaveFilterEmployeeId(e.target.value);
-                      setLeaveOffset(0);
-                    }}
-                    data-testid="leave-employee-id-filter"
-                  />
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input
+                      id="leave-emp-id-filter"
+                      type="number"
+                      placeholder="e.g. 1"
+                      className="filter-select"
+                      style={{ width: '110px' }}
+                      value={leaveFilterEmployeeId}
+                      onChange={(e) => {
+                        setLeaveFilterEmployeeId(e.target.value);
+                        setLeaveOffset(0);
+                      }}
+                      data-testid="leave-employee-id-filter"
+                    />
+                    {!isNaN(parseInt(leaveFilterEmployeeId.trim(), 10)) && parseInt(leaveFilterEmployeeId.trim(), 10) > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => {
+                          const empId = parseInt(leaveFilterEmployeeId.trim(), 10);
+                          setLedgerTarget({ id: empId, name: `Employee #${empId}` });
+                        }}
+                        data-testid="view-filtered-employee-ledger-btn"
+                        title="View balance history for this filtered employee"
+                      >
+                        📜 Ledger
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -908,7 +1069,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                             {leave.start_date} → {leave.end_date}
                           </div>
                           <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                            {formatDuration(leave.start_date, leave.end_date)}
+                            {formatWorkingDays(leave.working_days)}
                           </div>
                         </td>
                         <td style={{ maxWidth: '240px', wordBreak: 'break-word' }}>
@@ -1015,6 +1176,22 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                                 Cancel
                               </button>
                             )}
+
+                            {/* Ledger Option */}
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={() =>
+                                setLedgerTarget({
+                                  id: leave.employee_id,
+                                  name: leave.employee_name || `Employee #${leave.employee_id}`,
+                                })
+                              }
+                              title={`View balance ledger for ${leave.employee_name || `Employee #${leave.employee_id}`}`}
+                              data-testid={`view-ledger-btn-${leave.id}`}
+                            >
+                              📜 Ledger
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1255,6 +1432,225 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
       )}
 
       {/* =================================================================== */}
+      {/* SUBVIEW 3: LEAVE ENTITLEMENTS (ADMIN ONLY)                          */}
+      {/* =================================================================== */}
+      {activeSubTab === 'entitlements' && isAdmin && (
+        <div data-testid="leave-entitlements-section">
+          {/* Year Toolbar */}
+          <section className="toolbar-card" style={{ marginBottom: '20px' }}>
+            <div className="toolbar-filters" style={{ alignItems: 'center', justifyContent: 'space-between', width: '100%', display: 'flex' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <label htmlFor="entitlement-year-select" style={{ fontWeight: 600, color: '#475569' }}>
+                  Calendar Leave Year:
+                </label>
+                <select
+                  id="entitlement-year-select"
+                  className="filter-select"
+                  value={entitlementYear}
+                  onChange={(e) => setEntitlementYear(parseInt(e.target.value, 10))}
+                  data-testid="entitlement-year-select"
+                >
+                  <option value={CURRENT_YEAR - 1}>{CURRENT_YEAR - 1}</option>
+                  <option value={CURRENT_YEAR}>{CURRENT_YEAR} (Current)</option>
+                  <option value={CURRENT_YEAR + 1}>{CURRENT_YEAR + 1}</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setEntitlementModalMode('override');
+                    setEditingOverride(null);
+                    setEditingDefault(null);
+                    setIsEntitlementModalOpen(true);
+                  }}
+                  data-testid="add-override-btn"
+                >
+                  ➕ Add Employee Override
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {isEntitlementsLoading && (
+            <div className="empty-state" style={{ padding: '2rem', textAlign: 'center' }}>
+              Loading entitlement configuration...
+            </div>
+          )}
+
+          {entitlementsError && (
+            <div className="error-banner" role="alert" style={{ marginBottom: '16px' }}>
+              {entitlementsError}
+            </div>
+          )}
+
+          {!isEntitlementsLoading && (
+            <>
+              {/* Card 1: Org Defaults */}
+              <section className="dashboard-card" style={{ marginBottom: '24px' }}>
+                <div className="dashboard-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>🏢 Organization Annual Defaults ({entitlementYear})</h3>
+                    <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#64748b' }}>
+                      Baseline annual leave working days applied to all employees without individual overrides.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="table-responsive" style={{ marginTop: '16px' }}>
+                  <table className="data-table" data-testid="org-defaults-table">
+                    <thead>
+                      <tr>
+                        <th>Leave Category</th>
+                        <th>Allocated Days (Annual)</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(['ANNUAL', 'SICK', 'CASUAL'] as const).map((cat) => {
+                        const def = entitlementDefaults.find((d) => d.leave_type === cat);
+                        return (
+                          <tr key={cat}>
+                            <td style={{ fontWeight: 600 }}>
+                              {cat === 'ANNUAL' ? '🏖️ Annual Leave (ANNUAL)' : cat === 'SICK' ? '🤒 Sick Leave (SICK)' : '🌴 Casual Leave (CASUAL)'}
+                            </td>
+                            <td>
+                              {def ? (
+                                <strong style={{ fontSize: '1.05rem', color: '#1e293b' }}>{def.allocated_days} days</strong>
+                              ) : (
+                                <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>Not configured (unconstrained)</span>
+                              )}
+                            </td>
+                            <td>
+                              {def ? (
+                                <span className="status-pill status-pill-active">Enforced</span>
+                              ) : (
+                                <span className="status-pill status-pill-offline">Inactive</span>
+                              )}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                style={{ marginRight: '8px' }}
+                                onClick={() => {
+                                  setEntitlementModalMode('default');
+                                  setEditingDefault(
+                                    def || {
+                                      id: 0,
+                                      year: entitlementYear,
+                                      leave_type: cat,
+                                      allocated_days: 15,
+                                      created_at: '',
+                                      updated_at: '',
+                                    }
+                                  );
+                                  setEditingOverride(null);
+                                  setIsEntitlementModalOpen(true);
+                                }}
+                                data-testid={`configure-default-${cat.toLowerCase()}`}
+                              >
+                                ⚙️ {def ? 'Edit Quota' : 'Configure Quota'}
+                              </button>
+                              {def && (
+                                <button
+                                  type="button"
+                                  className="btn btn-danger btn-sm"
+                                  onClick={() => handleDeleteDefault(def.id)}
+                                  data-testid={`delete-default-${cat.toLowerCase()}`}
+                                >
+                                  🗑️ Delete
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              {/* Card 2: Employee Overrides */}
+              <section className="dashboard-card">
+                <div className="dashboard-card-header">
+                  <h3 style={{ margin: 0 }}>👤 Individual Employee Overrides ({entitlementYear})</h3>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#64748b' }}>
+                    Overrides replace organization defaults for a specific employee in calendar year {entitlementYear}.
+                  </p>
+                </div>
+
+                <div className="table-responsive" style={{ marginTop: '16px' }}>
+                  {entitlementOverrides.length === 0 ? (
+                    <div style={{ padding: '24px', textAlign: 'center', color: '#64748b' }}>
+                      No employee overrides configured for {entitlementYear}. All employees use organization defaults.
+                    </div>
+                  ) : (
+                    <table className="data-table" data-testid="employee-overrides-table">
+                      <thead>
+                        <tr>
+                          <th>Employee Code</th>
+                          <th>Employee Name</th>
+                          <th>Department</th>
+                          <th>Leave Type</th>
+                          <th>Override Allocated Days</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entitlementOverrides.map((ov) => (
+                          <tr key={ov.id}>
+                            <td>
+                              <span className="code-badge">{ov.employee_code || `EMP-${ov.employee_id}`}</span>
+                            </td>
+                            <td style={{ fontWeight: 600 }}>{ov.employee_name || '—'}</td>
+                            <td>{ov.department || '—'}</td>
+                            <td>
+                              <span className="status-pill status-pill-active">{ov.leave_type}</span>
+                            </td>
+                            <td>
+                              <strong style={{ fontSize: '1rem', color: '#1e293b' }}>{ov.allocated_days} days</strong>
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                style={{ marginRight: '8px' }}
+                                onClick={() => {
+                                  setEntitlementModalMode('override');
+                                  setEditingOverride(ov);
+                                  setEditingDefault(null);
+                                  setIsEntitlementModalOpen(true);
+                                }}
+                                data-testid={`edit-override-${ov.id}`}
+                              >
+                                ✏️ Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                onClick={() => handleDeleteOverride(ov.id)}
+                                data-testid={`delete-override-${ov.id}`}
+                              >
+                                🗑️ Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* =================================================================== */}
       {/* MODALS */}
       {/* =================================================================== */}
 
@@ -1324,7 +1720,7 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                 >
                   <div>
                     <strong>Dates:</strong> {reviewingRequest.start_date} → {reviewingRequest.end_date} (
-                    {formatDuration(reviewingRequest.start_date, reviewingRequest.end_date)})
+                    {formatWorkingDays(reviewingRequest.working_days)})
                   </div>
                   <div>
                     <strong>Type:</strong> {reviewingRequest.leave_type}
@@ -1335,6 +1731,47 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
                     </div>
                   )}
                 </div>
+
+                {reviewingRequest.allocated_days !== undefined && reviewingRequest.allocated_days !== null && (
+                  <div
+                    style={{
+                      background: '#f0fdf4',
+                      padding: '12px',
+                      borderRadius: '6px',
+                      marginBottom: '16px',
+                      fontSize: '0.85rem',
+                      border: '1px solid #bbf7d0',
+                    }}
+                    data-testid="review-balance-impact"
+                  >
+                    <div style={{ fontWeight: 600, color: '#166534', marginBottom: '8px' }}>
+                      📊 Balance Impact ({reviewingRequest.leave_type})
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', textAlign: 'center' }}>
+                      <div style={{ background: '#ffffff', padding: '6px', borderRadius: '4px', border: '1px solid #dcfce7' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'block' }}>Annual Quota</span>
+                        <strong style={{ fontSize: '0.95rem', color: '#1e293b' }}>{reviewingRequest.allocated_days}d</strong>
+                      </div>
+                      <div style={{ background: '#ffffff', padding: '6px', borderRadius: '4px', border: '1px solid #dcfce7' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'block' }}>Available Before</span>
+                        <strong style={{ fontSize: '0.95rem', color: '#1e293b' }}>
+                          {reviewingRequest.available_days_before ?? '—'}d
+                        </strong>
+                      </div>
+                      <div style={{ background: '#ffffff', padding: '6px', borderRadius: '4px', border: '1px solid #dcfce7' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'block' }}>Available After</span>
+                        <strong
+                          style={{
+                            fontSize: '0.95rem',
+                            color: (reviewingRequest.available_days_after ?? 0) < 0 ? '#dc2626' : '#16a34a',
+                          }}
+                        >
+                          {reviewingRequest.available_days_after ?? '—'}d
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="form-group">
                   <label htmlFor="review-decision-notes" className="form-label">
@@ -1563,6 +2000,27 @@ export const LeaveAndHolidayView: React.FC<LeaveAndHolidayViewProps> = ({
           </div>
         </div>
       )}
+      {/* Leave Entitlement Configuration Modal */}
+      <LeaveEntitlementModal
+        isOpen={isEntitlementModalOpen}
+        mode={entitlementModalMode}
+        year={entitlementYear}
+        initialDefault={editingDefault}
+        initialOverride={editingOverride}
+        employees={employeesList}
+        onClose={() => setIsEntitlementModalOpen(false)}
+        onSaveDefault={handleSaveDefault}
+        onSaveOverride={handleSaveOverride}
+      />
+
+      {/* Leave Balance History / Ledger Modal */}
+      <LeaveBalanceLedgerModal
+        isOpen={ledgerTarget !== null}
+        employeeId={ledgerTarget?.id ?? null}
+        employeeName={ledgerTarget?.name}
+        year={CURRENT_YEAR}
+        onClose={() => setLedgerTarget(null)}
+      />
     </main>
   );
 };

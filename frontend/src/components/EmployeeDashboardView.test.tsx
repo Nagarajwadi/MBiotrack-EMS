@@ -24,6 +24,8 @@ vi.mock('../api/deviceApi', () => ({
 
 vi.mock('../api/leaveApi', () => ({
   getLeaveRequests: vi.fn(),
+  getEmployeeLeaveBalances: vi.fn().mockResolvedValue({ balances: [] }),
+  getEmployeeBalanceLedger: vi.fn().mockResolvedValue([]),
 }));
 
 const mockDailyRecord: DailyAttendanceOperationsResponse = {
@@ -144,6 +146,7 @@ const mockLeavesResponse: LeaveRequestListResponse = {
       leave_type: 'ANNUAL',
       reason: 'Family trip',
       status: 'PENDING',
+      working_days: 2,
       decision_by_user_id: null,
       decision_by_user_name: null,
       decision_notes: null,
@@ -162,6 +165,7 @@ const mockLeavesResponse: LeaveRequestListResponse = {
       leave_type: 'ANNUAL',
       reason: 'Summer break',
       status: 'APPROVED',
+      working_days: 3,
       decision_by_user_id: 1,
       decision_by_user_name: 'Admin',
       decision_notes: 'Approved',
@@ -180,6 +184,7 @@ const mockLeavesResponse: LeaveRequestListResponse = {
       leave_type: 'SICK',
       reason: 'Fever',
       status: 'APPROVED',
+      working_days: 1,
       decision_by_user_id: 1,
       decision_by_user_name: 'Admin',
       decision_notes: 'Take care',
@@ -333,6 +338,53 @@ describe('EmployeeDashboardView Component', () => {
     expect(screen.getByText(/2026-11-15 to 2026-11-16/i)).toBeInTheDocument();
     expect(screen.getByText('Family trip')).toBeInTheDocument();
     expect(screen.getByText('1 Pending')).toBeInTheDocument();
+    expect(screen.getByText('2 working days')).toBeInTheDocument();
+  });
+
+  it('excludes legacy null duration records from usage totals and displays legacy label', async () => {
+    vi.mocked(leaveApi.getLeaveRequests).mockResolvedValueOnce({
+      items: [
+        {
+          id: 301,
+          employee_id: 3,
+          employee_code: 'EMP001',
+          employee_name: 'Charlie Employee',
+          department: 'Engineering',
+          start_date: '2026-10-01',
+          end_date: '2026-10-05',
+          leave_type: 'ANNUAL',
+          reason: 'Legacy trip',
+          status: 'PENDING',
+          working_days: null,
+          decision_by_user_id: null,
+          decision_by_user_name: null,
+          decision_notes: null,
+          decided_at: null,
+          created_at: '2026-10-01T10:00:00Z',
+          updated_at: '2026-10-01T10:00:00Z',
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    render(
+      <EmployeeDashboardView
+        currentUser={mockEmployeeUser}
+        sessionEpoch={1}
+        onNavigateToAttendance={mockNavigateToAttendance}
+        onNavigateToLeaves={mockNavigateToLeaves}
+        onNavigateToProfile={mockNavigateToProfile}
+      />
+    );
+
+    const pendingCard = await screen.findByTestId('dashboard-pending-leaves');
+    expect(pendingCard).toBeInTheDocument();
+    expect(screen.getByText('Legacy — duration unavailable')).toBeInTheDocument();
+
+    const leaveCard = screen.getByTestId('dashboard-leave-balance');
+    expect(leaveCard).toHaveTextContent('0d pending');
   });
 
   it('handles empty recent punches and empty pending leaves gracefully', async () => {
@@ -475,5 +527,25 @@ describe('EmployeeDashboardView Component', () => {
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent(/check in successfully recorded/i);
     });
+  });
+
+  it('opens leave balance ledger modal when Balance History button is clicked', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <EmployeeDashboardView
+        currentUser={mockEmployeeUser}
+        sessionEpoch={1}
+      />
+    );
+
+    await screen.findByRole('heading', { name: new RegExp(`welcome back`, 'i') });
+
+    const historyBtn = screen.getByTestId('view-balance-history-btn');
+    expect(historyBtn).toBeInTheDocument();
+    await user.click(historyBtn);
+
+    expect(await screen.findByTestId('leave-balance-ledger-modal')).toBeInTheDocument();
+    expect(leaveApi.getEmployeeBalanceLedger).toHaveBeenCalledWith(3, expect.any(Number));
   });
 });

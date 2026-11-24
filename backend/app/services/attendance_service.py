@@ -1,21 +1,29 @@
 import csv
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import io
 from typing import Any
+import zoneinfo
 from fastapi import HTTPException, status
 from psycopg.types.range import Range
 from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.attendance_correction import AttendanceCorrection
 from app.models.attendance_event import AttendanceEvent
 from app.models.attendance_review import AttendanceReview
 from app.models.audit_log import AuditLog
 from app.models.device import Device
 from app.models.employee import Employee
+from app.models.holiday import Holiday
+from app.models.leave_request import LeaveRequest
 from app.models.office import EmployeeOfficeAssignment, Office
 from app.models.user import User
 from app.schemas.attendance import (
+    AttendanceCorrectionCreate,
+    AttendanceCorrectionListResponse,
+    AttendanceCorrectionResponse,
+    AttendanceCorrectionReview,
     AttendanceEventDetail,
     AttendanceExceptionItem,
     AttendanceExceptionListResponse,
@@ -655,7 +663,7 @@ class AttendanceService:
         eligible_emp_ids = [e.id for e in eligible_employees]
 
         # 6. Fetch effective office assignments for eligible employees on this date
-        assigned_offices: dict[int, tuple[int, str, str]] = {}
+        assigned_offices: dict[int, tuple[int, str, str, str | None]] = {}
         if eligible_emp_ids:
             assignments_query = (
                 select(
@@ -663,6 +671,7 @@ class AttendanceService:
                     Office.id.label("office_id"),
                     Office.name.label("office_name"),
                     Office.code.label("office_code"),
+                    Office.timezone.label("office_timezone"),
                 )
                 .join(Office, EmployeeOfficeAssignment.office_id == Office.id)
                 .where(
@@ -670,10 +679,87 @@ class AttendanceService:
                     EmployeeOfficeAssignment.validity_range.overlaps(day_range),
                 )
             )
-            for emp_id, off_id, off_name, off_code in db.execute(assignments_query).all():
-                assigned_offices[emp_id] = (off_id, off_name, off_code)
+            for emp_id, off_id, off_name, off_code, off_tz in db.execute(assignments_query).all():
+                assigned_offices[emp_id] = (off_id, off_name, off_code, off_tz)
 
-        # 7. Query latest attendance reviews for eligible employees on target date
+        # 7. Query approved attendance corrections and merge effective punches (Phase 2)
+        approved_corrections = db.scalars(
+            select(AttendanceCorrection)
+            .where(
+                AttendanceCorrection.attendance_date == target_date,
+                AttendanceCorrection.status == "APPROVED",
+                AttendanceCorrection.employee_id.in_(eligible_emp_ids),
+            )
+            .order_by(AttendanceCorrection.proposed_timestamp.asc())
+        ).all()
+
+        for corr in approved_corrections:
+            emp_punches = punches_by_employee.setdefault(corr.employee_id, [])
+            off_info = assigned_offices.get(corr.employee_id)
+            if corr.correction_type == "TIMESTAMP_ADJUSTMENT" and corr.original_event_id is not None:
+                adjusted = False
+                for p in emp_punches:
+                    if p.id == corr.original_event_id:
+                        p.event_timestamp = corr.proposed_timestamp
+                        p.is_corrected = True
+                        p.correction_id = corr.id
+                        adjusted = True
+                        break
+                if not adjusted:
+                    emp_punches.append(
+                        DailyPunchDetail(
+                            id=-corr.id,
+                            punch_type=corr.original_event.punch_type if corr.original_event else "CHECK_IN",
+                            event_timestamp=corr.proposed_timestamp,
+                            device_id=None,
+                            device_name="Manual Correction",
+                            device_code="CORRECTION",
+                            office_id=off_info[0] if off_info else None,
+                            office_name=off_info[1] if off_info else None,
+                            office_code=off_info[2] if off_info else None,
+                            is_roaming=False,
+                            is_corrected=True,
+                            correction_id=corr.id,
+                        )
+                    )
+            else:
+                p_type = "CHECK_IN" if corr.correction_type == "MISSING_CHECK_IN" else "CHECK_OUT"
+                emp_punches.append(
+                    DailyPunchDetail(
+                        id=-corr.id,
+                        punch_type=p_type,
+                        event_timestamp=corr.proposed_timestamp,
+                        device_id=None,
+                        device_name="Manual Correction",
+                        device_code="CORRECTION",
+                        office_id=off_info[0] if off_info else None,
+                        office_name=off_info[1] if off_info else None,
+                        office_code=off_info[2] if off_info else None,
+                        is_roaming=False,
+                        is_corrected=True,
+                        correction_id=corr.id,
+                    )
+                )
+
+        # 8. Query approved leaves and official holidays for target date
+        approved_leaves = db.scalars(
+            select(LeaveRequest.employee_id).where(
+                LeaveRequest.employee_id.in_(eligible_emp_ids),
+                LeaveRequest.status == "APPROVED",
+                LeaveRequest.start_date <= target_date,
+                LeaveRequest.end_date >= target_date,
+            )
+        ).all()
+        emp_leave_set = set(approved_leaves)
+
+        official_holidays = db.scalars(
+            select(Holiday).where(
+                Holiday.holiday_date == target_date,
+                Holiday.is_optional.is_(False),
+            )
+        ).all()
+
+        # 9. Query latest attendance reviews for eligible employees on target date
         latest_reviews_by_emp: dict[int, AttendanceReview] = {}
         if eligible_employees:
             emp_ids = [e.id for e in eligible_employees]
@@ -693,7 +779,7 @@ class AttendanceService:
                 if rev.employee_id not in latest_reviews_by_emp:
                     latest_reviews_by_emp[rev.employee_id] = rev
 
-        # 8. Build employee-wise attendance records and calculate summary counters
+        # 10. Build employee-wise attendance records and calculate summary counters
         employee_items: list[EmployeeDailyAttendanceItem] = []
         employees_with_punches = 0
         employees_without_punches = 0
@@ -701,12 +787,33 @@ class AttendanceService:
 
         for emp in eligible_employees:
             emp_punches = punches_by_employee.get(emp.id, [])
+            emp_punches.sort(key=lambda p: p.event_timestamp)
             punch_count = len(emp_punches)
             roaming_count = sum(1 for p in emp_punches if p.is_roaming)
             has_roaming = roaming_count > 0
 
             first_punch = emp_punches[0].event_timestamp if punch_count > 0 else None
             last_punch = emp_punches[-1].event_timestamp if punch_count > 0 else None
+
+            off_info = assigned_offices.get(emp.id)
+            off_tz_name = off_info[3] if off_info and len(off_info) > 3 else "Asia/Kolkata"
+            try:
+                off_tz = zoneinfo.ZoneInfo(off_tz_name or "Asia/Kolkata")
+            except Exception:
+                off_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+            now_local = datetime.now(timezone.utc).astimezone(off_tz)
+            today_local = now_local.date()
+            is_past_day = target_date < today_local
+            is_weekend = target_date.weekday() in (5, 6)
+
+            # Leave / Holiday exemption
+            has_approved_leave = emp.id in emp_leave_set
+            has_holiday = any(
+                (h.office_id is None or (off_info and h.office_id == off_info[0]))
+                for h in official_holidays
+            )
+            is_excused = has_approved_leave or has_holiday
 
             # Look up latest review action if present
             latest_rev = latest_reviews_by_emp.get(emp.id)
@@ -725,11 +832,45 @@ class AttendanceService:
                     created_at=latest_rev.created_at,
                 )
 
+            # Check punch completeness
+            has_check_in = any(p.punch_type == "CHECK_IN" for p in emp_punches)
+            has_check_out = any(p.punch_type == "CHECK_OUT" for p in emp_punches)
+
+            missing_punch_reason: str | None = None
+            if not is_excused and punch_count > 0:
+                if not has_check_in and not has_check_out:
+                    if is_weekend:
+                        missing_punch_reason = "Unscheduled attendance: Irregular punches recorded on non-working day (requires review)"
+                    else:
+                        missing_punch_reason = "Incomplete attendance: Missing CHECK_IN and CHECK_OUT"
+                elif not has_check_in:
+                    if is_weekend:
+                        missing_punch_reason = "Unscheduled attendance: Single punch recorded on non-working day (requires review)"
+                    else:
+                        missing_punch_reason = "Incomplete attendance: Missing CHECK_IN"
+                elif not has_check_out and is_past_day:
+                    if is_weekend:
+                        missing_punch_reason = "Unscheduled attendance: Single punch recorded on non-working day (requires review)"
+                    else:
+                        missing_punch_reason = "Incomplete attendance: Missing CHECK_OUT"
+
             # Determine attendance review status
             if punch_count == 0:
                 review_status = "NO_PUNCH"
                 review_reason = None
                 employees_without_punches += 1
+            elif missing_punch_reason:
+                review_status = "REQUIRES_REVIEW"
+                requires_review_count += 1
+                employees_with_punches += 1
+                if has_roaming:
+                    if latest_rev and latest_rev.review_status == "ACKNOWLEDGED":
+                        reviewer_display = latest_rev.reviewer.full_name if latest_rev.reviewer else "Manager"
+                        review_reason = f"{missing_punch_reason} | Roaming punches recorded ({roaming_count}) - Acknowledged by {reviewer_display}"
+                    else:
+                        review_reason = f"{missing_punch_reason} | Roaming punches recorded ({roaming_count})"
+                else:
+                    review_reason = missing_punch_reason
             elif has_roaming:
                 if latest_rev and latest_rev.review_status == "ACKNOWLEDGED":
                     review_status = "ACKNOWLEDGED"
@@ -863,6 +1004,35 @@ class AttendanceService:
         return s
 
     @staticmethod
+    def _calculate_daily_worked_duration(punches: list[Any]) -> tuple[int | None, str | None]:
+        """Calculate daily worked duration in minutes and formatted string from chronological punches.
+
+        Returns (minutes, formatted_string) if all punches form complete, valid (CHECK_IN, CHECK_OUT)
+        pairs with no unmatched punches. If any punch remains unmatched or invalid, returns (None, None).
+        """
+        if not punches or len(punches) % 2 != 0:
+            return None, None
+
+        total_seconds = 0.0
+        for i in range(0, len(punches), 2):
+            p_in = punches[i]
+            p_out = punches[i + 1]
+
+            if p_in.punch_type != "CHECK_IN" or p_out.punch_type != "CHECK_OUT":
+                return None, None
+
+            delta = (p_out.event_timestamp - p_in.event_timestamp).total_seconds()
+            if delta <= 0:
+                return None, None
+
+            total_seconds += delta
+
+        total_minutes = int(total_seconds // 60)
+        hours = total_minutes // 60
+        mins = total_minutes % 60
+        return total_minutes, f"{hours}h {mins}m"
+
+    @staticmethod
     def _resolve_report_items(
         db: Session,
         current_user: User,
@@ -870,6 +1040,7 @@ class AttendanceService:
         end_date_str: str | None = None,
         office_id: int | None = None,
         employee_id: int | None = None,
+        department: str | None = None,
     ) -> tuple[list[AttendanceReportItem], AttendanceReportSummary]:
         """Shared internal computation for date-range attendance reports and CSV export."""
         dt_start, dt_end, start_str, end_str = AttendanceService._parse_and_validate_date_range(
@@ -886,8 +1057,12 @@ class AttendanceService:
                     detail="Office not found",
                 )
 
-        # 2. Role scoping
+        # 2. Role scoping & Department filter validation
+        dept_clean = department.strip() if department and department.strip() else None
+        manager_dept: str | None = None
         target_employee_id: int | None = None
+        filter_department: str | None = None
+
         if current_user.role == "EMPLOYEE":
             if current_user.employee_id is None:
                 raise HTTPException(
@@ -900,21 +1075,83 @@ class AttendanceService:
                     detail="Employees may only access their own attendance data.",
                 )
             target_employee_id = current_user.employee_id
-        elif current_user.role in ("ADMIN", "MANAGER"):
+
+            if dept_clean is not None:
+                emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == current_user.employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not emp or emp.department != dept_clean:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access forbidden: You may only view attendance for your authorized department.",
+                    )
+                filter_department = dept_clean
+
+        elif current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            manager_dept = manager_emp.department
+
+            if dept_clean is not None and dept_clean != manager_dept:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only view attendance for employees within your authorized team.",
+                )
+            filter_department = manager_dept
+
+            if employee_id is not None:
+                target_emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not target_emp:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Employee not found",
+                    )
+                if target_emp.department != manager_dept:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access forbidden: You may only view attendance for employees within your authorized team.",
+                    )
+                target_employee_id = employee_id
+
+        elif current_user.role == "ADMIN":
             target_employee_id = employee_id
+            filter_department = dept_clean
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Unauthorized role for attendance queries.",
             )
 
-        # 3. Query events within bounded date range
+        # 3. Query raw events within bounded date range
         events_query = (
             select(
                 AttendanceEvent,
                 Office.name.label("office_name"),
                 Office.code.label("office_code"),
             )
+            .join(Employee, AttendanceEvent.employee_id == Employee.id)
             .outerjoin(Office, AttendanceEvent.office_id == Office.id)
             .where(
                 AttendanceEvent.event_timestamp >= dt_start,
@@ -926,27 +1163,18 @@ class AttendanceService:
             events_query = events_query.where(AttendanceEvent.office_id == office_id)
         if target_employee_id is not None:
             events_query = events_query.where(AttendanceEvent.employee_id == target_employee_id)
+        if filter_department is not None:
+            events_query = events_query.where(Employee.department == filter_department)
 
         events_query = events_query.order_by(AttendanceEvent.event_timestamp.asc())
         event_rows = db.execute(events_query).all()
 
-        # Group punches by (employee_id, date_str)
-        punches_by_emp_date: dict[tuple[int, str], list[tuple[AttendanceEvent, str, str]]] = {}
-        punched_emp_ids: set[int] = set()
-        total_events = len(event_rows)
-        total_roaming_punches = 0
-
-        for ev, off_name, off_code in event_rows:
-            if ev.is_roaming:
-                total_roaming_punches += 1
-            punched_emp_ids.add(ev.employee_id)
-            d_str = ev.event_timestamp.strftime("%Y-%m-%d")
-            punches_by_emp_date.setdefault((ev.employee_id, d_str), []).append((ev, off_name, off_code))
+        raw_punched_emp_ids = {ev.employee_id for ev, _, _ in event_rows}
 
         # 4. Query established eligible employee population
         emp_query = select(Employee).where(
             (Employee.is_active.is_(True) & Employee.deleted_at.is_(None))
-            | (Employee.id.in_(list(punched_emp_ids)))
+            | (Employee.id.in_(list(raw_punched_emp_ids)))
         )
 
         if target_employee_id is not None:
@@ -957,15 +1185,18 @@ class AttendanceService:
                 EmployeeOfficeAssignment.validity_range.overlaps(date_range),
             )
             emp_query = emp_query.where(
-                (Employee.id.in_(assigned_emp_subq)) | (Employee.id.in_(list(punched_emp_ids)))
+                (Employee.id.in_(assigned_emp_subq)) | (Employee.id.in_(list(raw_punched_emp_ids)))
             )
+
+        if filter_department is not None:
+            emp_query = emp_query.where(Employee.department == filter_department)
 
         emp_query = emp_query.order_by(Employee.employee_code.asc())
         eligible_employees = list(db.scalars(emp_query).all())
         eligible_emp_ids = [e.id for e in eligible_employees]
 
-        # 5. Resolve primary office assignments for eligible employees in range
-        assigned_offices: dict[int, tuple[int, str, str]] = {}
+        # 5. Resolve primary office assignments and timezones for eligible employees in range
+        assigned_offices: dict[int, tuple[int, str, str, str | None]] = {}
         if eligible_emp_ids:
             asgn_q = (
                 select(
@@ -973,6 +1204,7 @@ class AttendanceService:
                     Office.id.label("office_id"),
                     Office.name.label("office_name"),
                     Office.code.label("office_code"),
+                    Office.timezone.label("office_timezone"),
                 )
                 .join(Office, EmployeeOfficeAssignment.office_id == Office.id)
                 .where(
@@ -980,37 +1212,153 @@ class AttendanceService:
                     EmployeeOfficeAssignment.validity_range.overlaps(date_range),
                 )
             )
-            for e_id, o_id, o_name, o_code in db.execute(asgn_q).all():
-                assigned_offices[e_id] = (o_id, o_name, o_code)
+            for e_id, o_id, o_name, o_code, o_tz in db.execute(asgn_q).all():
+                assigned_offices[e_id] = (o_id, o_name, o_code, o_tz)
 
-        # 6. Build report items
+        # 6. Fetch approved corrections for eligible employees in date range
+        p_start_date = dt_start.date()
+        p_end_date = dt_end.date()
+
+        approved_corrections: list[AttendanceCorrection] = []
+        if eligible_emp_ids:
+            approved_corrections = list(
+                db.scalars(
+                    select(AttendanceCorrection)
+                    .where(
+                        AttendanceCorrection.employee_id.in_(eligible_emp_ids),
+                        AttendanceCorrection.attendance_date >= p_start_date,
+                        AttendanceCorrection.attendance_date <= p_end_date,
+                        AttendanceCorrection.status == "APPROVED",
+                    )
+                    .order_by(AttendanceCorrection.proposed_timestamp.asc())
+                ).all()
+            )
+
+        corrections_by_emp: dict[int, list[AttendanceCorrection]] = {}
+        for corr in approved_corrections:
+            corrections_by_emp.setdefault(corr.employee_id, []).append(corr)
+
+        # 7. Index raw events by employee
+        class _ReportPunch:
+            def __init__(
+                self,
+                id: int | None,
+                punch_type: str,
+                event_timestamp: datetime,
+                is_roaming: bool,
+                office_id: int | None,
+                office_name: str | None,
+                office_code: str | None,
+            ):
+                self.id = id
+                self.punch_type = punch_type
+                self.event_timestamp = event_timestamp
+                self.is_roaming = is_roaming
+                self.office_id = office_id
+                self.office_name = office_name
+                self.office_code = office_code
+
+        raw_punches_by_emp: dict[int, list[_ReportPunch]] = {}
+        for ev, off_name, off_code in event_rows:
+            raw_punches_by_emp.setdefault(ev.employee_id, []).append(
+                _ReportPunch(
+                    id=ev.id,
+                    punch_type=ev.punch_type,
+                    event_timestamp=ev.event_timestamp,
+                    is_roaming=ev.is_roaming,
+                    office_id=ev.office_id,
+                    office_name=off_name,
+                    office_code=off_code,
+                )
+            )
+
+        # 8. Build effective line items per employee and date
         report_items: list[AttendanceReportItem] = []
-        employees_with_punches = len(punched_emp_ids.intersection(eligible_emp_ids))
+        effective_punched_emp_ids: set[int] = set()
+        total_events = 0
+        total_roaming_punches = 0
         employees_without_punches = 0
 
         for emp in eligible_employees:
-            # Find all date punch groups for this employee
-            emp_date_groups = [
-                (d_str, group) for (e_id, d_str), group in punches_by_emp_date.items() if e_id == emp.id
-            ]
-
             off_info = assigned_offices.get(emp.id)
+            off_tz_name = off_info[3] if off_info else None
+            try:
+                emp_tz = zoneinfo.ZoneInfo(off_tz_name or "Asia/Kolkata")
+            except Exception:
+                emp_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
 
-            if emp_date_groups:
-                # Add a report row for each date activity
-                for d_str, group in emp_date_groups:
-                    p_count = len(group)
-                    roam_count = sum(1 for (ev, _, _) in group if ev.is_roaming)
+            # Copy raw punches for this employee without mutating raw models
+            emp_punches = list(raw_punches_by_emp.get(emp.id, []))
+
+            # Merge approved corrections
+            emp_corrs = corrections_by_emp.get(emp.id, [])
+            for corr in emp_corrs:
+                if corr.correction_type == "TIMESTAMP_ADJUSTMENT" and corr.original_event_id is not None:
+                    adjusted = False
+                    for p in emp_punches:
+                        if p.id == corr.original_event_id:
+                            p.event_timestamp = corr.proposed_timestamp
+                            adjusted = True
+                            break
+                    if not adjusted:
+                        orig_type = corr.original_event.punch_type if corr.original_event else "CHECK_IN"
+                        emp_punches.append(
+                            _ReportPunch(
+                                id=-corr.id,
+                                punch_type=orig_type,
+                                event_timestamp=corr.proposed_timestamp,
+                                is_roaming=False,
+                                office_id=off_info[0] if off_info else None,
+                                office_name=off_info[1] if off_info else None,
+                                office_code=off_info[2] if off_info else None,
+                            )
+                        )
+                else:
+                    corr_type = "CHECK_IN" if corr.correction_type == "MISSING_CHECK_IN" else "CHECK_OUT"
+                    emp_punches.append(
+                        _ReportPunch(
+                            id=-corr.id,
+                            punch_type=corr_type,
+                            event_timestamp=corr.proposed_timestamp,
+                            is_roaming=False,
+                            office_id=off_info[0] if off_info else None,
+                            office_name=off_info[1] if off_info else None,
+                            office_code=off_info[2] if off_info else None,
+                        )
+                    )
+
+            # Chronological sort
+            emp_punches.sort(key=lambda p: p.event_timestamp)
+
+            # Group punches by employee office-local date string
+            date_groups: dict[str, list[_ReportPunch]] = {}
+            for p in emp_punches:
+                d_str = p.event_timestamp.astimezone(emp_tz).strftime("%Y-%m-%d")
+                date_groups.setdefault(d_str, []).append(p)
+
+            # Keep only date groups within the requested [start_str, end_str] range
+            active_date_groups = {
+                d: plist for d, plist in date_groups.items() if start_str <= d <= end_str
+            }
+
+            if active_date_groups:
+                effective_punched_emp_ids.add(emp.id)
+                for d_str, plist in active_date_groups.items():
+                    p_count = len(plist)
+                    total_events += p_count
+                    roam_count = sum(1 for p in plist if p.is_roaming)
+                    total_roaming_punches += roam_count
                     has_roam = roam_count > 0
-                    first_p = group[0][0].event_timestamp
-                    last_p = group[-1][0].event_timestamp
+                    first_p = plist[0].event_timestamp
+                    last_p = plist[-1].event_timestamp
 
                     # Office for this punch day: office of first punch, or assigned office
-                    punch_off_id = group[0][0].office_id
-                    punch_off_name = group[0][1] or (off_info[1] if off_info else None)
-                    punch_off_code = group[0][2] or (off_info[2] if off_info else None)
+                    punch_off_id = plist[0].office_id
+                    punch_off_name = plist[0].office_name or (off_info[1] if off_info else None)
+                    punch_off_code = plist[0].office_code or (off_info[2] if off_info else None)
 
                     status_str = "REQUIRES_REVIEW" if has_roam else "NORMAL"
+                    duration_mins, duration_fmt = AttendanceService._calculate_daily_worked_duration(plist)
 
                     report_items.append(
                         AttendanceReportItem(
@@ -1028,6 +1376,8 @@ class AttendanceService:
                             has_roaming=has_roam,
                             roaming_count=roam_count,
                             status=status_str,
+                            work_duration_minutes=duration_mins,
+                            work_duration_formatted=duration_fmt,
                         )
                     )
             else:
@@ -1050,21 +1400,33 @@ class AttendanceService:
                         has_roaming=False,
                         roaming_count=0,
                         status="NO_PUNCH",
+                        work_duration_minutes=None,
+                        work_duration_formatted=None,
                     )
                 )
 
-        # 7. Deterministic sort: date desc, employee_code asc
+        # 9. Deterministic sort: date desc, employee_code asc
         report_items.sort(key=lambda x: (x.attendance_date, x.employee_code), reverse=True)
+
+        complete_durations = [it.work_duration_minutes for it in report_items if it.work_duration_minutes is not None]
+        total_worked_hours = round(sum(complete_durations) / 60.0, 2)
+        avg_worked_hours = (
+            round(sum(complete_durations) / len(complete_durations) / 60.0, 2)
+            if complete_durations
+            else None
+        )
 
         summary = AttendanceReportSummary(
             start_date=start_str,
             end_date=end_str,
             total_events=total_events,
-            employees_with_punches=employees_with_punches,
+            employees_with_punches=len(effective_punched_emp_ids),
             employees_without_punches=employees_without_punches,
             roaming_punch_count=total_roaming_punches,
             total_records=len(report_items),
             eligible_employee_count=len(eligible_employees),
+            total_worked_hours=total_worked_hours,
+            average_daily_worked_hours=avg_worked_hours,
         )
 
         return report_items, summary
@@ -1076,6 +1438,7 @@ class AttendanceService:
         start_date: str | None = None,
         end_date: str | None = None,
         office_id: int | None = None,
+        department: str | None = None,
         employee_id: int | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -1091,6 +1454,7 @@ class AttendanceService:
             end_date_str=end_date,
             office_id=office_id,
             employee_id=employee_id,
+            department=department,
         )
 
         total_items = len(items)
@@ -1111,6 +1475,7 @@ class AttendanceService:
         start_date: str | None = None,
         end_date: str | None = None,
         office_id: int | None = None,
+        department: str | None = None,
         employee_id: int | None = None,
     ) -> tuple[bytes, str]:
         """Generate UTF-8 with BOM CSV export with formula neutralization."""
@@ -1121,6 +1486,7 @@ class AttendanceService:
             end_date_str=end_date,
             office_id=office_id,
             employee_id=employee_id,
+            department=department,
         )
 
         output = io.StringIO()
@@ -1137,6 +1503,7 @@ class AttendanceService:
             "First Punch",
             "Last Punch",
             "Roaming Status",
+            "Work Duration",
         ]
         writer.writerow(headers)
 
@@ -1158,6 +1525,7 @@ class AttendanceService:
                 AttendanceService._sanitize_csv_cell(item.first_punch) if item.first_punch else "—",
                 AttendanceService._sanitize_csv_cell(item.last_punch) if item.last_punch else "—",
                 AttendanceService._sanitize_csv_cell(roaming_desc),
+                AttendanceService._sanitize_csv_cell(item.work_duration_formatted or "—"),
             ]
             writer.writerow(row)
 
@@ -1485,7 +1853,7 @@ class AttendanceService:
 
         exception_items: list[AttendanceExceptionItem] = []
         for emp in daily_ops.employees:
-            if emp.has_roaming:
+            if emp.review_status == "REQUIRES_REVIEW" or emp.has_roaming:
                 exception_items.append(
                     AttendanceExceptionItem(
                         employee_id=emp.employee_id,
@@ -1517,3 +1885,581 @@ class AttendanceService:
             total_exceptions=total_exceptions,
             items=paged_items,
         )
+
+    @staticmethod
+    def _build_correction_response(corr: AttendanceCorrection) -> AttendanceCorrectionResponse:
+        """Map AttendanceCorrection model to response schema with denormalized fields."""
+        return AttendanceCorrectionResponse(
+            id=corr.id,
+            employee_id=corr.employee_id,
+            employee_name=f"{corr.employee.first_name} {corr.employee.last_name}" if corr.employee else None,
+            employee_code=corr.employee.employee_code if corr.employee else None,
+            department=corr.employee.department if corr.employee else None,
+            attendance_date=corr.attendance_date,
+            correction_type=corr.correction_type,
+            proposed_timestamp=corr.proposed_timestamp,
+            original_event_id=corr.original_event_id,
+            reason=corr.reason,
+            status=corr.status,
+            requested_by_user_id=corr.requested_by_user_id,
+            requester_name=corr.requester.full_name if corr.requester else None,
+            requester_email=corr.requester.email if corr.requester else None,
+            reviewed_by_user_id=corr.reviewed_by_user_id,
+            reviewer_name=corr.reviewer.full_name if corr.reviewer else None,
+            reviewer_email=corr.reviewer.email if corr.reviewer else None,
+            review_notes=corr.review_notes,
+            reviewed_at=corr.reviewed_at,
+            idempotency_key=corr.idempotency_key,
+            created_at=corr.created_at,
+            updated_at=corr.updated_at,
+        )
+
+    @staticmethod
+    def create_correction(
+        db: Session,
+        payload: AttendanceCorrectionCreate,
+        current_user: User,
+        client_ip: str | None = None,
+    ) -> AttendanceCorrectionResponse:
+        """Submit an attendance correction request.
+
+        - Authenticated access required (EMPLOYEE for self, MANAGER for department, ADMIN for all).
+        - Validates target employee, timezone, attendance date alignment, and prevents future timestamps.
+        - Strictly prevents duplicate missing-punch corrections if punch of that type already exists.
+        - Strictly prevents duplicate pending requests of the same type for the same date.
+        - Idempotency key protected with atomic audit recording.
+        """
+        # 1. Role verification & Scoping
+        if current_user.role == "EMPLOYEE":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is not linked to an employee profile.",
+                )
+            if payload.employee_id != current_user.employee_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Employees may only submit correction requests for themselves.",
+                )
+        elif current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            target_emp_check = db.scalar(
+                select(Employee).where(
+                    Employee.id == payload.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not target_emp_check or target_emp_check.department != manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only submit corrections for employees within your authorized team.",
+                )
+        elif current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for attendance correction creation.",
+            )
+
+        # 2. Target Employee Verification
+        target_emp = db.scalar(
+            select(Employee).where(
+                Employee.id == payload.employee_id,
+                Employee.deleted_at.is_(None),
+                Employee.is_active.is_(True),
+            )
+        )
+        if not target_emp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target employee not found or inactive.",
+            )
+
+        # 3. Timezone & Office Assignment Resolution
+        dt_start, dt_end = AttendanceService._get_attendance_day_boundaries(payload.attendance_date)
+        day_range = Range(dt_start, dt_end, bounds="[]")
+        assignment = db.scalar(
+            select(EmployeeOfficeAssignment).where(
+                EmployeeOfficeAssignment.employee_id == target_emp.id,
+                EmployeeOfficeAssignment.validity_range.overlaps(day_range),
+            )
+        )
+        office = db.get(Office, assignment.office_id) if assignment else None
+        off_tz_name = office.timezone if office and office.timezone else "Asia/Kolkata"
+        try:
+            emp_tz = zoneinfo.ZoneInfo(off_tz_name)
+        except Exception:
+            emp_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+        # 4. Validate Proposed Timestamp
+        proposed_dt = payload.proposed_timestamp
+        if proposed_dt.tzinfo is None:
+            proposed_dt = proposed_dt.replace(tzinfo=timezone.utc)
+
+        now_utc = datetime.now(timezone.utc)
+        if proposed_dt > now_utc + timedelta(minutes=5):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="proposed_timestamp cannot be in the future.",
+            )
+
+        proposed_local_date = proposed_dt.astimezone(emp_tz).date()
+        if proposed_local_date != payload.attendance_date:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"proposed_timestamp ({proposed_local_date}) does not match attendance_date ({payload.attendance_date}) in the employee's office timezone.",
+            )
+
+        # 5. Type-specific validation
+        if payload.correction_type == "TIMESTAMP_ADJUSTMENT":
+            if payload.original_event_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="original_event_id is required for TIMESTAMP_ADJUSTMENT.",
+                )
+            orig_event = db.get(AttendanceEvent, payload.original_event_id)
+            if not orig_event or orig_event.employee_id != target_emp.id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Original attendance event not found for this employee.",
+                )
+
+        # 6. Duplicate Prevention (Requirement 2)
+        if payload.correction_type in ("MISSING_CHECK_IN", "MISSING_CHECK_OUT"):
+            target_punch_type = "CHECK_IN" if payload.correction_type == "MISSING_CHECK_IN" else "CHECK_OUT"
+            dt_local_start = datetime.combine(payload.attendance_date, time.min).replace(tzinfo=emp_tz)
+            dt_local_end = datetime.combine(payload.attendance_date, time.max).replace(tzinfo=emp_tz)
+
+            raw_punch_exists = db.scalar(
+                select(AttendanceEvent).where(
+                    AttendanceEvent.employee_id == target_emp.id,
+                    AttendanceEvent.punch_type == target_punch_type,
+                    AttendanceEvent.event_timestamp >= dt_local_start,
+                    AttendanceEvent.event_timestamp <= dt_local_end,
+                )
+            )
+            if raw_punch_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot request missing {target_punch_type}: A {target_punch_type} punch already exists for this employee on this date.",
+                )
+
+            approved_correction_exists = db.scalar(
+                select(AttendanceCorrection).where(
+                    AttendanceCorrection.employee_id == target_emp.id,
+                    AttendanceCorrection.attendance_date == payload.attendance_date,
+                    AttendanceCorrection.correction_type == payload.correction_type,
+                    AttendanceCorrection.status == "APPROVED",
+                )
+            )
+            if approved_correction_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot request missing {target_punch_type}: An approved {payload.correction_type} correction already exists for this employee on this date.",
+                )
+
+        # 7. Idempotency Check
+        idemp_key = payload.idempotency_key.strip()
+        existing_by_key = db.scalar(
+            select(AttendanceCorrection).where(
+                AttendanceCorrection.idempotency_key == idemp_key
+            )
+        )
+        if existing_by_key:
+            is_identical = (
+                existing_by_key.employee_id == payload.employee_id
+                and existing_by_key.attendance_date == payload.attendance_date
+                and existing_by_key.correction_type == payload.correction_type
+                and existing_by_key.proposed_timestamp == proposed_dt
+                and existing_by_key.reason.strip() == payload.reason.strip()
+                and existing_by_key.requested_by_user_id == current_user.id
+            )
+            if is_identical:
+                return AttendanceService._build_correction_response(existing_by_key)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotency key reuse with mismatched parameters.",
+            )
+
+        # 8. Check pending duplicate request
+        existing_pending = db.scalar(
+            select(AttendanceCorrection).where(
+                AttendanceCorrection.employee_id == target_emp.id,
+                AttendanceCorrection.attendance_date == payload.attendance_date,
+                AttendanceCorrection.correction_type == payload.correction_type,
+                AttendanceCorrection.status == "PENDING",
+            )
+        )
+        if existing_pending:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"A pending correction request of type '{payload.correction_type}' already exists for this date.",
+            )
+
+        # 9. Create correction & atomic audit log
+        correction = AttendanceCorrection(
+            employee_id=target_emp.id,
+            attendance_date=payload.attendance_date,
+            correction_type=payload.correction_type,
+            proposed_timestamp=proposed_dt,
+            original_event_id=payload.original_event_id if payload.correction_type == "TIMESTAMP_ADJUSTMENT" else None,
+            reason=payload.reason.strip(),
+            status="PENDING",
+            requested_by_user_id=current_user.id,
+            idempotency_key=idemp_key,
+        )
+        db.add(correction)
+
+        try:
+            db.flush()
+            audit = AuditLog(
+                actor_user_id=current_user.id,
+                action="ATTENDANCE_CORRECTION_REQUESTED",
+                target_type="attendance_correction",
+                target_id=str(correction.id),
+                before_state=None,
+                after_state={
+                    "correction_id": correction.id,
+                    "employee_id": correction.employee_id,
+                    "attendance_date": correction.attendance_date.isoformat(),
+                    "correction_type": correction.correction_type,
+                    "proposed_timestamp": correction.proposed_timestamp.isoformat(),
+                    "status": "PENDING",
+                    "reason": correction.reason,
+                    "idempotency_key": correction.idempotency_key,
+                },
+                metadata_={
+                    "client_ip": client_ip,
+                    "requester_role": current_user.role,
+                },
+                ip_address=client_ip,
+            )
+            db.add(audit)
+            db.commit()
+            db.refresh(correction)
+            return AttendanceService._build_correction_response(correction)
+        except IntegrityError:
+            db.rollback()
+            collided = db.scalar(
+                select(AttendanceCorrection).where(
+                    AttendanceCorrection.idempotency_key == idemp_key
+                )
+            )
+            if collided:
+                is_identical = (
+                    collided.employee_id == payload.employee_id
+                    and collided.attendance_date == payload.attendance_date
+                    and collided.correction_type == payload.correction_type
+                    and collided.proposed_timestamp == proposed_dt
+                    and collided.reason.strip() == payload.reason.strip()
+                    and collided.requested_by_user_id == current_user.id
+                )
+                if is_identical:
+                    return AttendanceService._build_correction_response(collided)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Idempotency key reuse with mismatched parameters.",
+                )
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def list_corrections(
+        db: Session,
+        current_user: User,
+        employee_id: int | None = None,
+        attendance_date: date | str | None = None,
+        status_filter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> AttendanceCorrectionListResponse:
+        """Query paginated attendance corrections with role-based scoping and filters."""
+        safe_limit = max(1, min(limit, 100))
+        safe_offset = max(0, offset)
+
+        query = select(AttendanceCorrection)
+
+        if current_user.role == "EMPLOYEE":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is not linked to an employee profile.",
+                )
+            if employee_id is not None and employee_id != current_user.employee_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Employees may only view their own correction requests.",
+                )
+            query = query.where(AttendanceCorrection.employee_id == current_user.employee_id)
+        elif current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            query = query.join(Employee, AttendanceCorrection.employee_id == Employee.id).where(
+                Employee.department == manager_emp.department
+            )
+            if employee_id is not None:
+                target_emp = db.scalar(
+                    select(Employee).where(
+                        Employee.id == employee_id,
+                        Employee.deleted_at.is_(None),
+                    )
+                )
+                if not target_emp or target_emp.department != manager_emp.department:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access forbidden: You may only view corrections for employees within your authorized team.",
+                    )
+                query = query.where(AttendanceCorrection.employee_id == employee_id)
+        elif current_user.role == "ADMIN":
+            if employee_id is not None:
+                query = query.where(AttendanceCorrection.employee_id == employee_id)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for viewing corrections.",
+            )
+
+        if attendance_date:
+            if isinstance(attendance_date, str):
+                try:
+                    att_d = datetime.strptime(attendance_date.strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Invalid date format: '{attendance_date}'. Expected YYYY-MM-DD.",
+                    )
+            else:
+                att_d = attendance_date
+            query = query.where(AttendanceCorrection.attendance_date == att_d)
+
+        if status_filter and status_filter.upper() != "ALL":
+            st_clean = status_filter.strip().upper()
+            if st_clean not in ("PENDING", "APPROVED", "REJECTED"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid status filter: '{status_filter}'. Allowed: PENDING, APPROVED, REJECTED, ALL.",
+                )
+            query = query.where(AttendanceCorrection.status == st_clean)
+
+        total_count = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        corrections = db.scalars(
+            query.order_by(AttendanceCorrection.created_at.desc(), AttendanceCorrection.id.desc())
+            .offset(safe_offset)
+            .limit(safe_limit)
+        ).all()
+
+        return AttendanceCorrectionListResponse(
+            items=[AttendanceService._build_correction_response(c) for c in corrections],
+            total=total_count,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+
+    @staticmethod
+    def review_correction(
+        db: Session,
+        correction_id: int,
+        payload: AttendanceCorrectionReview,
+        current_user: User,
+        client_ip: str | None = None,
+    ) -> AttendanceCorrectionResponse:
+        """Review (approve or reject) an attendance correction with anti-self-approval enforcement, approval-time revalidation, and audit logging."""
+        # 1. Role verification
+        if current_user.role == "EMPLOYEE":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Employees are not authorized to review attendance corrections.",
+            )
+        if current_user.role not in ("ADMIN", "MANAGER"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized role for attendance correction review.",
+            )
+
+        correction = db.scalar(
+            select(AttendanceCorrection)
+            .where(AttendanceCorrection.id == correction_id)
+            .with_for_update(of=AttendanceCorrection)
+        )
+        if not correction:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attendance correction request not found.",
+            )
+
+        # 2. Manager department scoping
+        if current_user.role == "MANAGER":
+            if current_user.employee_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager user account is not linked to an employee staff profile. Contact an administrator to link your account.",
+                )
+            manager_emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == current_user.employee_id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+            if not manager_emp or not manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Manager has no assigned department team.",
+                )
+            target_emp = correction.employee
+            if not target_emp or target_emp.department != manager_emp.department:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access forbidden: You may only review corrections for employees within your authorized team.",
+                )
+
+        # 3. Anti-Self-Approval Enforcement
+        if current_user.id == correction.requested_by_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Self-approval is strictly forbidden. The requester cannot review or approve their own correction request.",
+            )
+        if current_user.employee_id is not None and current_user.employee_id == correction.employee_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Self-approval is strictly forbidden. An employee cannot review or approve their own attendance correction.",
+            )
+
+        # 4. Status Check
+        if correction.status != "PENDING":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Correction request has already been reviewed (current status: {correction.status}).",
+            )
+
+        # 5. Revalidate duplicate punches at approval time with transactional locking (Requirement 2)
+        if payload.status == "APPROVED" and correction.correction_type in ("MISSING_CHECK_IN", "MISSING_CHECK_OUT"):
+            target_punch_type = "CHECK_IN" if correction.correction_type == "MISSING_CHECK_IN" else "CHECK_OUT"
+
+            # Resolve target employee timezone
+            dt_start, dt_end = AttendanceService._get_attendance_day_boundaries(correction.attendance_date)
+            day_range = Range(dt_start, dt_end, bounds="[]")
+            assignment = db.scalar(
+                select(EmployeeOfficeAssignment).where(
+                    EmployeeOfficeAssignment.employee_id == correction.employee_id,
+                    EmployeeOfficeAssignment.validity_range.overlaps(day_range),
+                )
+            )
+            office = db.get(Office, assignment.office_id) if assignment else None
+            off_tz_name = office.timezone if office and office.timezone else "Asia/Kolkata"
+            try:
+                emp_tz = zoneinfo.ZoneInfo(off_tz_name)
+            except Exception:
+                emp_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+            dt_local_start = datetime.combine(correction.attendance_date, time.min).replace(tzinfo=emp_tz)
+            dt_local_end = datetime.combine(correction.attendance_date, time.max).replace(tzinfo=emp_tz)
+
+            raw_punch_exists = db.scalar(
+                select(AttendanceEvent).where(
+                    AttendanceEvent.employee_id == correction.employee_id,
+                    AttendanceEvent.punch_type == target_punch_type,
+                    AttendanceEvent.event_timestamp >= dt_local_start,
+                    AttendanceEvent.event_timestamp <= dt_local_end,
+                )
+            )
+            if raw_punch_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Cannot approve correction: A {target_punch_type} punch already exists for this employee on this date.",
+                )
+
+            # Concurrent duplicate protection using with_for_update(of=AttendanceCorrection)
+            approved_correction_exists = db.scalar(
+                select(AttendanceCorrection).where(
+                    AttendanceCorrection.employee_id == correction.employee_id,
+                    AttendanceCorrection.attendance_date == correction.attendance_date,
+                    AttendanceCorrection.correction_type == correction.correction_type,
+                    AttendanceCorrection.status == "APPROVED",
+                    AttendanceCorrection.id != correction.id,
+                ).with_for_update(of=AttendanceCorrection)
+            )
+            if approved_correction_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Cannot approve correction: An approved {correction.correction_type} correction already exists for this employee on this date.",
+                )
+
+        # 6. Apply review decision & atomic audit logging
+        before_state = {
+            "status": correction.status,
+            "reviewed_by_user_id": correction.reviewed_by_user_id,
+            "review_notes": correction.review_notes,
+            "reviewed_at": correction.reviewed_at.isoformat() if correction.reviewed_at else None,
+        }
+
+        now_utc = datetime.now(timezone.utc)
+        correction.status = payload.status
+        correction.review_notes = payload.review_notes
+        correction.reviewed_by_user_id = current_user.id
+        correction.reviewed_at = now_utc
+
+        action_name = (
+            "ATTENDANCE_CORRECTION_APPROVED"
+            if payload.status == "APPROVED"
+            else "ATTENDANCE_CORRECTION_REJECTED"
+        )
+
+        audit = AuditLog(
+            actor_user_id=current_user.id,
+            action=action_name,
+            target_type="attendance_correction",
+            target_id=str(correction.id),
+            before_state=before_state,
+            after_state={
+                "status": correction.status,
+                "reviewed_by_user_id": current_user.id,
+                "review_notes": correction.review_notes,
+                "reviewed_at": correction.reviewed_at.isoformat(),
+            },
+            metadata_={
+                "client_ip": client_ip,
+                "employee_id": correction.employee_id,
+                "attendance_date": correction.attendance_date.isoformat(),
+                "correction_type": correction.correction_type,
+            },
+            ip_address=client_ip,
+        )
+        db.add(audit)
+
+        try:
+            db.commit()
+            db.refresh(correction)
+            return AttendanceService._build_correction_response(correction)
+        except Exception:
+            db.rollback()
+            raise

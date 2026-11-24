@@ -45,6 +45,41 @@ describe('App component role-based access & directory UI', () => {
     expect(screen.queryByRole('heading', { name: /employee directory/i })).not.toBeInTheDocument();
   });
 
+  it('renders restoring session loading state when authStatus is restoring', () => {
+    renderWithAuth(<App />, {
+      authValue: {
+        status: 'restoring',
+        isAuthenticated: false,
+        user: null,
+      },
+    });
+
+    expect(screen.getByRole('status', { name: /restoring session/i })).toBeInTheDocument();
+    expect(screen.getByText(/verifying your session with the server/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /sign in to mbiotrack-ems/i })).not.toBeInTheDocument();
+  });
+
+  it('renders recoverable network error and retry button when restoration fails with network issue', async () => {
+    const mockRetry = vi.fn().mockResolvedValue(undefined);
+    renderWithAuth(<App />, {
+      authValue: {
+        status: 'restoring',
+        isAuthenticated: false,
+        user: null,
+        restorationError: 'Unable to verify session due to a network connection issue.',
+        retryRestoration: mockRetry,
+      },
+    });
+
+    expect(
+      screen.getByText(/unable to verify session due to a network connection issue/i)
+    ).toBeInTheDocument();
+    const retryBtn = screen.getByRole('button', { name: /retry connection/i });
+    expect(retryBtn).toBeInTheDocument();
+    await userEvent.click(retryBtn);
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+  });
+
   describe('ADMIN role UI behavior', () => {
     it('renders full employee directory, summary metrics, and "+ Add Employee" button', async () => {
       vi.mocked(employeeApi.getEmployees).mockResolvedValueOnce(mockEmployeesList);

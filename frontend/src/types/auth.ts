@@ -31,7 +31,7 @@ export interface PasswordChangePayload {
   new_password: string;
 }
 
-export type AuthStatus = 'unauthenticated' | 'authenticating' | 'authenticated';
+export type AuthStatus = 'unauthenticated' | 'authenticating' | 'authenticated' | 'restoring';
 
 export interface AuthContextValue {
   user: User | null;
@@ -40,5 +40,7 @@ export interface AuthContextValue {
   sessionEpoch: number;
   login: (credentials: LoginCredentials) => Promise<void>;
   logout: () => Promise<void>;
+  restorationError: string | null;
+  retryRestoration: () => Promise<void>;
 }
 

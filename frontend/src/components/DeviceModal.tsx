@@ -48,15 +48,20 @@ function getInitialDeviceFormState(
 ): FormState {
   if (mode === 'edit' && initialData) {
     return {
-      office_id: String(initialData.office_id),
-      name: initialData.name,
-      device_code: initialData.device_code,
-      serial_number: initialData.serial_number,
-      model_name: initialData.model_name || '',
-      ip_address: initialData.ip_address || '',
-      mac_address: initialData.mac_address || '',
+      office_id:
+        initialData.office_id !== undefined && initialData.office_id !== null
+          ? String(initialData.office_id)
+          : offices.length > 0
+            ? String(offices[0].id)
+            : '',
+      name: initialData.name ?? '',
+      device_code: initialData.device_code ?? '',
+      serial_number: initialData.serial_number ?? '',
+      model_name: initialData.model_name ?? '',
+      ip_address: initialData.ip_address ?? '',
+      mac_address: initialData.mac_address ?? '',
       status: (initialData.status as DeviceStatus) || 'ACTIVE',
-      is_active: initialData.is_active,
+      is_active: initialData.is_active ?? true,
     };
   }
   const defaultOfficeId = offices.length > 0 ? String(offices[0].id) : '';
@@ -83,23 +88,21 @@ export const DeviceModal: React.FC<DeviceModalProps> = ({
   onClose,
   onSubmit,
 }) => {
-  const [trackedTarget, setTrackedTarget] = useState({
-    open: isOpen,
-    mode,
-    id: initialData?.id,
-  });
-  const [form, setForm] = useState<FormState>(getInitialDeviceFormState(mode, offices, initialData));
+  const [form, setForm] = useState<FormState>(() =>
+    getInitialDeviceFormState(mode, offices, initialData)
+  );
   const [errors, setErrors] = useState<FormErrors>({});
 
-  if (
-    trackedTarget.open !== isOpen ||
-    trackedTarget.mode !== mode ||
-    trackedTarget.id !== initialData?.id
-  ) {
-    setTrackedTarget({ open: isOpen, mode, id: initialData?.id });
-    setForm(getInitialDeviceFormState(mode, offices, initialData));
-    setErrors({});
-  }
+  // Synchronize office selection in create mode if office options load after mount
+  useEffect(() => {
+    if (mode === 'create' && !form.office_id && offices.length > 0) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setForm((prev) => ({
+        ...prev,
+        office_id: String(offices[0].id),
+      }));
+    }
+  }, [mode, form.office_id, offices]);
 
   // Handle escape key
   useEffect(() => {

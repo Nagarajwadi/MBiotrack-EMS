@@ -11,6 +11,7 @@ export interface UserAccount {
   updated_at: string;
   employee_code?: string | null;
   department?: string | null;
+  employee_is_active?: boolean | null;
 }
 
 export interface UserCreatePayload {
@@ -22,6 +23,10 @@ export interface UserCreatePayload {
 
 export interface UserStatusUpdatePayload {
   is_active: boolean;
+}
+
+export interface UserRoleUpdatePayload {
+  role: 'EMPLOYEE' | 'MANAGER';
 }
 
 export interface PasswordResetPayload {

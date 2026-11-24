@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as client from './client';
-import { getUsers, createUser, updateUserStatus } from './userManagementApi';
+import { getUsers, createUser, updateUserStatus, updateUserRole } from './userManagementApi';
 
 describe('userManagementApi', () => {
   beforeEach(() => {
@@ -82,6 +82,31 @@ describe('userManagementApi', () => {
       expect.objectContaining({
         method: 'PATCH',
         body: JSON.stringify({ is_active: false }),
+      })
+    );
+  });
+
+  it('updates user role', async () => {
+    const mockUpdated = {
+      id: 2,
+      employee_id: 10,
+      full_name: 'Jane Smith',
+      email: 'jane@example.com',
+      role: 'MANAGER' as const,
+      is_active: true,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+    };
+
+    const apiFetchSpy = vi.spyOn(client, 'apiFetch').mockResolvedValue(mockUpdated);
+
+    const result = await updateUserRole(2, { role: 'MANAGER' });
+    expect(result).toEqual(mockUpdated);
+    expect(apiFetchSpy).toHaveBeenCalledWith(
+      '/api/v1/users/2/role',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ role: 'MANAGER' }),
       })
     );
   });

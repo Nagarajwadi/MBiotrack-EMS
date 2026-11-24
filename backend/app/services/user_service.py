@@ -12,12 +12,19 @@ from app.schemas.user import (
     PasswordResetRequest,
     UserAccountResponse,
     UserCreate,
+    UserRoleUpdate,
     UserStatusUpdate,
 )
 
 
 def _map_to_response(user: User) -> UserAccountResponse:
     emp = user.employee
+    employee_is_active: bool | None = None
+    if user.employee_id is not None:
+        employee_is_active = (
+            emp is not None and emp.is_active is True and emp.deleted_at is None
+        )
+
     return UserAccountResponse(
         id=user.id,
         employee_id=user.employee_id,
@@ -29,6 +36,7 @@ def _map_to_response(user: User) -> UserAccountResponse:
         updated_at=user.updated_at,
         employee_code=emp.employee_code if emp else None,
         department=emp.department if emp else None,
+        employee_is_active=employee_is_active,
     )
 
 
@@ -233,6 +241,70 @@ class UserService:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Database conflict during status update.",
+            )
+        except Exception:
+            db.rollback()
+            raise
+
+    @staticmethod
+    def update_user_role(
+        db: Session,
+        user_id: int,
+        payload: UserRoleUpdate,
+        current_user: User,
+    ) -> UserAccountResponse:
+        if current_user.role != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for the current user role.",
+            )
+
+        user = db.get(User, user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User account not found.",
+            )
+
+        # Prevent admin from changing their own role
+        if user.id == current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Administrators cannot change their own role.",
+            )
+
+        # Target user cannot be ADMIN
+        if user.role == "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Administrator roles cannot be modified through this workflow.",
+            )
+
+        old_role = user.role
+        user.role = payload.role
+        user.updated_at = func.now()
+
+        try:
+            audit = AuditLog(
+                actor_user_id=current_user.id,
+                action="USER_ROLE_UPDATE",
+                target_type="user",
+                target_id=str(user.id),
+                ip_address=None,
+                metadata_={
+                    "previous_role": old_role,
+                    "new_role": user.role,
+                },
+            )
+            db.add(audit)
+            db.commit()
+            db.refresh(user)
+            return _map_to_response(user)
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Database conflict during role update.",
             )
         except Exception:
             db.rollback()

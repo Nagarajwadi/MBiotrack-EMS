@@ -3,6 +3,7 @@ import {
   getUsers,
   createUser,
   updateUserStatus,
+  updateUserRole,
   resetUserPassword,
 } from '../api/userManagementApi';
 import { getEmployees } from '../api/employeeApi';
@@ -12,9 +13,11 @@ import type {
   PasswordResetPayload,
   UserAccount,
   UserCreatePayload,
+  UserRoleUpdatePayload,
 } from '../types/userManagement';
 import { UserCreateModal } from './UserCreateModal';
 import { ResetPasswordModal } from './ResetPasswordModal';
+import { UserRoleModal } from './UserRoleModal';
 import './components.css';
 
 export interface UserManagementViewProps {
@@ -39,6 +42,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   // Modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
   const [resetPasswordUser, setResetPasswordUser] = useState<UserAccount | null>(null);
+  const [roleChangeUser, setRoleChangeUser] = useState<UserAccount | null>(null);
   const [isUpdatingStatusId, setIsUpdatingStatusId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -74,19 +78,22 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
   // Metrics
   const metrics = useMemo(() => {
     const total = users.length;
-    const active = users.filter((u) => u.is_active).length;
+    const active = users.filter((u) => u.is_active && u.employee_is_active !== false).length;
     const disabled = users.filter((u) => !u.is_active).length;
+    const inactiveEmployees = users.filter((u) => u.is_active && u.employee_is_active === false).length;
+    const admins = users.filter((u) => u.role === 'ADMIN').length;
     const managers = users.filter((u) => u.role === 'MANAGER').length;
     const employeeRole = users.filter((u) => u.role === 'EMPLOYEE').length;
-    return { total, active, disabled, managers, employeeRole };
+    return { total, active, disabled, inactiveEmployees, admins, managers, employeeRole };
   }, [users]);
 
   // Filtered users
   const filteredUsers = useMemo(() => {
     return users.filter((u) => {
       if (roleFilter !== 'ALL' && u.role !== roleFilter) return false;
-      if (statusFilter === 'ACTIVE' && !u.is_active) return false;
+      if (statusFilter === 'ACTIVE' && (!u.is_active || u.employee_is_active === false)) return false;
       if (statusFilter === 'DISABLED' && u.is_active) return false;
+      if (statusFilter === 'INACTIVE_EMPLOYEE' && (!u.is_active || u.employee_is_active !== false)) return false;
 
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim();
@@ -121,6 +128,17 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     });
   };
 
+  const handleUpdateRole = async (userId: number, payload: UserRoleUpdatePayload) => {
+    const updated = await updateUserRole(userId, payload);
+    setUsers((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, role: updated.role, updated_at: updated.updated_at } : u))
+    );
+    setFeedback({
+      type: 'success',
+      message: `Role for "${updated.full_name}" changed to ${updated.role} successfully.`,
+    });
+  };
+
   const handleToggleStatus = async (userItem: UserAccount) => {
     if (userItem.id === currentUser.id && userItem.is_active) {
       setFeedback({
@@ -152,6 +170,12 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
     } finally {
       setIsUpdatingStatusId(null);
     }
+  };
+
+  const handleResetFilters = () => {
+    setRoleFilter('ALL');
+    setStatusFilter('ALL');
+    setSearchQuery('');
   };
 
   return (
@@ -207,6 +231,14 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           <div className="metric-label">Disabled Accounts</div>
         </div>
         <div className="metric-card">
+          <div className="metric-value text-danger">{metrics.inactiveEmployees}</div>
+          <div className="metric-label">Inactive Employees</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-value text-primary">{metrics.admins}</div>
+          <div className="metric-label">Administrators</div>
+        </div>
+        <div className="metric-card">
           <div className="metric-value text-info">{metrics.managers}</div>
           <div className="metric-label">Managers</div>
         </div>
@@ -255,6 +287,7 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
             <option value="ALL">All Status</option>
             <option value="ACTIVE">Active</option>
             <option value="DISABLED">Disabled</option>
+            <option value="INACTIVE_EMPLOYEE">Inactive Employee</option>
           </select>
         </div>
       </div>
@@ -265,9 +298,21 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           <div className="loading-spinner" />
           <p>Loading user accounts...</p>
         </div>
-      ) : filteredUsers.length === 0 ? (
+      ) : users.length === 0 ? (
         <div className="empty-state">
           <p>No user accounts found matching current criteria.</p>
+        </div>
+      ) : filteredUsers.length === 0 ? (
+        <div className="empty-state" data-testid="filtered-empty-state">
+          <p>User accounts exist, but none match the current search or filter criteria.</p>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginTop: '0.75rem' }}
+            onClick={handleResetFilters}
+          >
+            Reset Filters
+          </button>
         </div>
       ) : (
         <div className="table-responsive">
@@ -310,13 +355,22 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                       )}
                     </td>
                     <td>
-                      <span
-                        className={`status-pill ${
-                          item.is_active ? 'status-pill-present' : 'status-pill-absent'
-                        }`}
-                      >
-                        {item.is_active ? 'Active' : 'Disabled'}
-                      </span>
+                      {!item.is_active ? (
+                        <span className="status-pill status-pill-absent">
+                          Disabled
+                        </span>
+                      ) : item.employee_is_active === false ? (
+                        <span
+                          className="status-pill status-pill-warning"
+                          title="Linked employee record is inactive or deleted"
+                        >
+                          Inactive Employee
+                        </span>
+                      ) : (
+                        <span className="status-pill status-pill-present">
+                          Active
+                        </span>
+                      )}
                     </td>
                     <td>{new Date(item.created_at).toLocaleDateString()}</td>
                     <td>
@@ -327,6 +381,21 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
                           onClick={() => setResetPasswordUser(item)}
                         >
                           Reset Password
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          disabled={isSelf || item.role === 'ADMIN'}
+                          onClick={() => setRoleChangeUser(item)}
+                          title={
+                            isSelf
+                              ? 'Cannot change own role'
+                              : item.role === 'ADMIN'
+                              ? 'Administrator role cannot be changed'
+                              : undefined
+                          }
+                        >
+                          Change Role
                         </button>
                         <button
                           type="button"
@@ -366,6 +435,14 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
         user={resetPasswordUser}
         onClose={() => setResetPasswordUser(null)}
         onSubmit={handleResetPassword}
+      />
+
+      {/* Change Role Modal */}
+      <UserRoleModal
+        isOpen={Boolean(roleChangeUser)}
+        user={roleChangeUser}
+        onClose={() => setRoleChangeUser(null)}
+        onSubmit={handleUpdateRole}
       />
     </div>
   );

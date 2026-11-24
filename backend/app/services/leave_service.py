@@ -1,12 +1,16 @@
-from datetime import date, datetime, timezone
+import zoneinfo
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.audit_log import AuditLog
 from app.models.employee import Employee
+from app.models.holiday import Holiday
+from app.models.leave_entitlement import LeaveBalanceLedger
 from app.models.leave_request import LeaveRequest
+from app.models.office import EmployeeOfficeAssignment, Office
 from app.models.user import User
 from app.schemas.leave import (
     LeaveRequestCreate,
@@ -14,6 +18,7 @@ from app.schemas.leave import (
     LeaveRequestListResponse,
     LeaveRequestReview,
 )
+from app.services.leave_entitlement_service import LeaveEntitlementService
 
 
 class LeaveService:
@@ -41,11 +46,53 @@ class LeaveService:
         return manager_emp.department
 
     @staticmethod
-    def _to_detail(req: LeaveRequest) -> LeaveRequestDetail:
+    def _to_detail(req: LeaveRequest, db: Session | None = None) -> LeaveRequestDetail:
         emp = req.employee
         reviewer = req.decision_by_user
         emp_name = f"{emp.first_name} {emp.last_name}" if emp else None
         reviewer_name = f"{reviewer.email}" if reviewer else None
+
+        allocated_days: int | None = None
+        available_days_before: int | None = None
+        available_days_after: int | None = None
+
+        if db is not None and req.leave_type != "UNPAID" and req.working_days is not None:
+            leave_year = req.start_date.year
+            allocated, _ = LeaveEntitlementService.get_effective_entitlement(
+                db=db,
+                employee_id=req.employee_id,
+                year=leave_year,
+                leave_type=req.leave_type,
+            )
+            if allocated is not None:
+                allocated_days = allocated
+                start_of_year = date(leave_year, 1, 1)
+                end_of_year = date(leave_year, 12, 31)
+
+                other_used = db.scalar(
+                    select(func.coalesce(func.sum(LeaveRequest.working_days), 0)).where(
+                        LeaveRequest.employee_id == req.employee_id,
+                        LeaveRequest.leave_type == req.leave_type,
+                        LeaveRequest.status == "APPROVED",
+                        LeaveRequest.id != req.id,
+                        LeaveRequest.start_date >= start_of_year,
+                        LeaveRequest.start_date <= end_of_year,
+                    )
+                ) or 0
+
+                other_pending = db.scalar(
+                    select(func.coalesce(func.sum(LeaveRequest.working_days), 0)).where(
+                        LeaveRequest.employee_id == req.employee_id,
+                        LeaveRequest.leave_type == req.leave_type,
+                        LeaveRequest.status == "PENDING",
+                        LeaveRequest.id != req.id,
+                        LeaveRequest.start_date >= start_of_year,
+                        LeaveRequest.start_date <= end_of_year,
+                    )
+                ) or 0
+
+                available_days_before = max(0, allocated - other_used - other_pending)
+                available_days_after = max(0, available_days_before - req.working_days)
 
         return LeaveRequestDetail(
             id=req.id,
@@ -58,13 +105,158 @@ class LeaveService:
             leave_type=req.leave_type,
             reason=req.reason,
             status=req.status,
+            working_days=req.working_days,
             decision_by_user_id=req.decision_by_user_id,
             decision_by_user_name=reviewer_name,
             decision_notes=req.decision_notes,
             decided_at=req.decided_at,
+            allocated_days=allocated_days,
+            available_days_before=available_days_before,
+            available_days_after=available_days_after,
             created_at=req.created_at,
             updated_at=req.updated_at,
         )
+
+    @staticmethod
+    def calculate_working_days(
+        db: Session,
+        employee_id: int,
+        start_date: date,
+        end_date: date,
+        optional_holiday_dates: list[date] | None = None,
+    ) -> int:
+        """Calculate the working-day duration for a requested leave span.
+
+        Policy rules:
+        - Monday–Friday are counted as working days.
+        - Saturdays and Sundays are excluded.
+        - Applicable organization-wide official holidays are excluded.
+        - Official holidays belonging to employee's effective assigned office are excluded.
+        - Holidays belonging to other offices are not excluded.
+        - Leave date ranges are inclusive [start_date, end_date].
+        - Optional/restricted holidays are excluded only when explicitly selected.
+        - If no office assignment is effective on a date, apply org-wide holidays only.
+        - Assignment effectiveness is resolved using the office's configured timezone
+          at local noon (12:00:00 local time) for date-level assignment resolution.
+        - Every submitted optional holiday date is validated against an actual applicable
+          optional holiday; invalid, unrelated, or non-optional selections are rejected (HTTP 422).
+        """
+        if end_date < start_date:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="end_date must be on or after start_date.",
+            )
+
+        # 1. Fetch all office assignments for this employee with joined office details
+        assignments = db.scalars(
+            select(EmployeeOfficeAssignment)
+            .options(joinedload(EmployeeOfficeAssignment.office))
+            .where(EmployeeOfficeAssignment.employee_id == employee_id)
+        ).all()
+
+        # 2. Fetch all holidays falling within [start_date, end_date]
+        holidays = db.scalars(
+            select(Holiday).where(
+                Holiday.holiday_date >= start_date,
+                Holiday.holiday_date <= end_date,
+            )
+        ).all()
+
+        holidays_by_date: dict[date, list[Holiday]] = {}
+        for h in holidays:
+            holidays_by_date.setdefault(h.holiday_date, []).append(h)
+
+        selected_opt_dates = set(optional_holiday_dates or [])
+
+        # Validate that all submitted optional holiday dates fall within the leave range
+        for opt_date in selected_opt_dates:
+            if opt_date < start_date or opt_date > end_date:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Selected optional holiday date {opt_date} is outside the requested leave range.",
+                )
+
+        working_days = 0
+        curr = start_date
+
+        while curr <= end_date:
+            # Weekend exclusion
+            if curr.weekday() >= 5:
+                curr += timedelta(days=1)
+                continue
+
+            # Resolve effective office assignment for date curr using local noon in office timezone
+            effective_office: Office | None = None
+            for asgn in assignments:
+                if asgn.office and asgn.valid_from and asgn.valid_to:
+                    tz_name = asgn.office.timezone or "Asia/Kolkata"
+                    try:
+                        office_tz = zoneinfo.ZoneInfo(tz_name)
+                    except Exception:
+                        office_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+                    local_noon = datetime.combine(curr, time(12, 0), tzinfo=office_tz)
+                    if asgn.valid_from <= local_noon < asgn.valid_to:
+                        effective_office = asgn.office
+                        break
+
+            # Evaluate holidays on date curr
+            day_holidays = holidays_by_date.get(curr, [])
+            is_holiday_excluded = False
+
+            for h in day_holidays:
+                is_applicable = (h.office_id is None) or (
+                    effective_office is not None and h.office_id == effective_office.id
+                )
+                if not is_applicable:
+                    continue
+
+                if not h.is_optional:
+                    # Official holiday: always excluded
+                    is_holiday_excluded = True
+                    break
+                else:
+                    # Optional holiday: excluded only if explicitly selected
+                    if curr in selected_opt_dates:
+                        is_holiday_excluded = True
+                        break
+
+            if not is_holiday_excluded:
+                working_days += 1
+
+            curr += timedelta(days=1)
+
+        # Validate every submitted optional holiday date against actual applicable optional holidays
+        for opt_date in selected_opt_dates:
+            opt_effective_office: Office | None = None
+            for asgn in assignments:
+                if asgn.office and asgn.valid_from and asgn.valid_to:
+                    tz_name = asgn.office.timezone or "Asia/Kolkata"
+                    try:
+                        office_tz = zoneinfo.ZoneInfo(tz_name)
+                    except Exception:
+                        office_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
+                    local_noon = datetime.combine(opt_date, time(12, 0), tzinfo=office_tz)
+                    if asgn.valid_from <= local_noon < asgn.valid_to:
+                        opt_effective_office = asgn.office
+                        break
+
+            opt_holidays = holidays_by_date.get(opt_date, [])
+            has_valid_optional = any(
+                h.is_optional
+                and (
+                    h.office_id is None
+                    or (opt_effective_office is not None and h.office_id == opt_effective_office.id)
+                )
+                for h in opt_holidays
+            )
+            if not has_valid_optional:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Date {opt_date} is not a valid applicable optional holiday for this employee.",
+                )
+
+        return working_days
 
     @staticmethod
     def submit_leave_request(
@@ -74,6 +266,13 @@ class LeaveService:
     ) -> LeaveRequestDetail:
         """Submit a new leave request with date validation and conflict checks."""
         # 1. Determine target employee
+        if payload.start_date.year != payload.end_date.year:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Leave request cannot span across multiple calendar years (January 1 - December 31). Please submit separate requests for each calendar year.",
+            )
+        leave_year = payload.start_date.year
+
         if current_user.role == "EMPLOYEE":
             if current_user.employee_id is None:
                 raise HTTPException(
@@ -148,7 +347,63 @@ class LeaveService:
                 detail="A conflicting active or pending leave request already exists for this date range.",
             )
 
-        # 4. Create leave request
+        # 4. Calculate working days
+        working_days = LeaveService.calculate_working_days(
+            db=db,
+            employee_id=target_employee_id,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            optional_holiday_dates=payload.optional_holiday_dates,
+        )
+
+        if working_days <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The requested leave period contains 0 working days.",
+            )
+
+        # 5. Check annual leave entitlement if configured and paid leave type
+        allocated: int | None = None
+        if payload.leave_type != "UNPAID":
+            allocated, _ = LeaveEntitlementService.get_effective_entitlement(
+                db=db,
+                employee_id=target_employee_id,
+                year=leave_year,
+                leave_type=payload.leave_type,
+            )
+            if allocated is not None:
+                start_of_year = date(leave_year, 1, 1)
+                end_of_year = date(leave_year, 12, 31)
+                used_days = db.scalar(
+                    select(func.coalesce(func.sum(LeaveRequest.working_days), 0)).where(
+                        LeaveRequest.employee_id == target_employee_id,
+                        LeaveRequest.leave_type == payload.leave_type,
+                        LeaveRequest.status == "APPROVED",
+                        LeaveRequest.start_date >= start_of_year,
+                        LeaveRequest.start_date <= end_of_year,
+                    )
+                ) or 0
+                pending_days = db.scalar(
+                    select(func.coalesce(func.sum(LeaveRequest.working_days), 0)).where(
+                        LeaveRequest.employee_id == target_employee_id,
+                        LeaveRequest.leave_type == payload.leave_type,
+                        LeaveRequest.status == "PENDING",
+                        LeaveRequest.start_date >= start_of_year,
+                        LeaveRequest.start_date <= end_of_year,
+                    )
+                ) or 0
+                available = max(0, allocated - used_days - pending_days)
+                if working_days > available:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"Insufficient leave balance for {payload.leave_type} in {leave_year}. "
+                            f"Allocated: {allocated}, used: {used_days}, pending: {pending_days}, "
+                            f"available: {available}, requested: {working_days} day(s)."
+                        ),
+                    )
+
+        # 6. Create leave request
         new_request = LeaveRequest(
             employee_id=target_employee_id,
             start_date=payload.start_date,
@@ -156,11 +411,39 @@ class LeaveService:
             leave_type=payload.leave_type,
             reason=payload.reason,
             status="PENDING",
+            working_days=working_days,
         )
         db.add(new_request)
         db.flush()
 
-        # 5. Record audit log
+        # 7. Record reservation in balance ledger if entitlement is active
+        if payload.leave_type != "UNPAID" and allocated is not None:
+            ledger_entry = LeaveBalanceLedger(
+                leave_request_id=new_request.id,
+                employee_id=target_employee_id,
+                year=leave_year,
+                leave_type=payload.leave_type,
+                transaction_type="RESERVATION",
+                days=working_days,
+                created_by_user_id=current_user.id,
+            )
+            db.add(ledger_entry)
+
+            audit_ledger = AuditLog(
+                actor_user_id=current_user.id,
+                action="LEAVE_BALANCE_RESERVED",
+                target_type="leave_request",
+                target_id=str(new_request.id),
+                metadata_={
+                    "employee_id": target_employee_id,
+                    "year": leave_year,
+                    "leave_type": payload.leave_type,
+                    "days": working_days,
+                },
+            )
+            db.add(audit_ledger)
+
+        # 8. Record audit log
         audit = AuditLog(
             actor_user_id=current_user.id,
             action="LEAVE_REQUEST_SUBMITTED",
@@ -171,13 +454,14 @@ class LeaveService:
                 "start_date": str(new_request.start_date),
                 "end_date": str(new_request.end_date),
                 "leave_type": new_request.leave_type,
+                "working_days": working_days,
             },
         )
         db.add(audit)
 
         db.commit()
         db.refresh(new_request)
-        return LeaveService._to_detail(new_request)
+        return LeaveService._to_detail(new_request, db=db)
 
     @staticmethod
     def list_leave_requests(
@@ -323,7 +607,7 @@ class LeaveService:
                 detail="Unauthorized role for viewing leave requests.",
             )
 
-        return LeaveService._to_detail(req)
+        return LeaveService._to_detail(req, db=db)
 
     @staticmethod
     def review_leave_request(
@@ -381,8 +665,16 @@ class LeaveService:
                 detail=f"Cannot review leave request in '{req.status}' status. Only PENDING requests may be reviewed.",
             )
 
+        # Acquire lock on Employee row to serialize concurrent leave submissions/approvals
+        db.execute(
+            select(Employee.id)
+            .where(Employee.id == req.employee_id)
+            .with_for_update()
+        )
+
         decision_upper = payload.decision.upper()
         now_utc = datetime.now(timezone.utc)
+        leave_year = req.start_date.year
 
         if decision_upper == "APPROVED":
             # Guard against overlapping approved requests
@@ -402,9 +694,109 @@ class LeaveService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot approve request: an overlapping approved leave request already exists.",
                 )
+
+            # Revalidate balance availability at approval
+            if req.leave_type != "UNPAID" and req.working_days is not None:
+                allocated, _ = LeaveEntitlementService.get_effective_entitlement(
+                    db=db,
+                    employee_id=req.employee_id,
+                    year=leave_year,
+                    leave_type=req.leave_type,
+                )
+                if allocated is not None:
+                    start_of_year = date(leave_year, 1, 1)
+                    end_of_year = date(leave_year, 12, 31)
+                    other_used = db.scalar(
+                        select(func.coalesce(func.sum(LeaveRequest.working_days), 0)).where(
+                            LeaveRequest.employee_id == req.employee_id,
+                            LeaveRequest.leave_type == req.leave_type,
+                            LeaveRequest.status == "APPROVED",
+                            LeaveRequest.id != req.id,
+                            LeaveRequest.start_date >= start_of_year,
+                            LeaveRequest.start_date <= end_of_year,
+                        )
+                    ) or 0
+
+                    if other_used + req.working_days > allocated:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail=(
+                                f"Cannot approve leave request #{req.id}: Insufficient annual entitlement. "
+                                f"Allocated: {allocated}, already approved/used: {other_used}, "
+                                f"requested: {req.working_days} day(s)."
+                            ),
+                        )
+
+                    consumption_entry = LeaveBalanceLedger(
+                        leave_request_id=req.id,
+                        employee_id=req.employee_id,
+                        year=leave_year,
+                        leave_type=req.leave_type,
+                        transaction_type="CONSUMPTION",
+                        days=req.working_days,
+                        created_by_user_id=current_user.id,
+                    )
+                    db.add(consumption_entry)
+
+                    audit_ledger = AuditLog(
+                        actor_user_id=current_user.id,
+                        action="LEAVE_BALANCE_CONSUMED",
+                        target_type="leave_request",
+                        target_id=str(req.id),
+                        metadata_={
+                            "employee_id": req.employee_id,
+                            "year": leave_year,
+                            "leave_type": req.leave_type,
+                            "days": req.working_days,
+                        },
+                    )
+                    db.add(audit_ledger)
+
             req.status = "APPROVED"
             audit_event = "LEAVE_REQUEST_APPROVED"
         else:
+            # Release reservation on rejection if a reservation exists
+            if req.leave_type != "UNPAID" and req.working_days is not None:
+                has_reservation = db.scalar(
+                    select(LeaveBalanceLedger.id).where(
+                        LeaveBalanceLedger.leave_request_id == req.id,
+                        LeaveBalanceLedger.transaction_type == "RESERVATION",
+                    )
+                )
+                if has_reservation:
+                    existing_release = db.scalar(
+                        select(LeaveBalanceLedger.id).where(
+                            LeaveBalanceLedger.leave_request_id == req.id,
+                            LeaveBalanceLedger.transaction_type == "RESERVATION_RELEASE",
+                        )
+                    )
+                    if not existing_release:
+                        release_entry = LeaveBalanceLedger(
+                            leave_request_id=req.id,
+                            employee_id=req.employee_id,
+                            year=leave_year,
+                            leave_type=req.leave_type,
+                            transaction_type="RESERVATION_RELEASE",
+                            days=req.working_days,
+                            created_by_user_id=current_user.id,
+                        )
+                        db.add(release_entry)
+
+                        audit_ledger = AuditLog(
+                            actor_user_id=current_user.id,
+                            action="LEAVE_BALANCE_RELEASED",
+                            target_type="leave_request",
+                            target_id=str(req.id),
+                            metadata_={
+                                "employee_id": req.employee_id,
+                                "year": leave_year,
+                                "leave_type": req.leave_type,
+                                "days": req.working_days,
+                                "reason": "REJECTED",
+                            },
+                        )
+                        db.add(audit_ledger)
+
             req.status = "REJECTED"
             audit_event = "LEAVE_REQUEST_REJECTED"
 
@@ -428,7 +820,7 @@ class LeaveService:
 
         db.commit()
         db.refresh(req)
-        return LeaveService._to_detail(req)
+        return LeaveService._to_detail(req, db=db)
 
     @staticmethod
     def cancel_leave_request(
@@ -484,7 +876,98 @@ class LeaveService:
                 detail="Unauthorized role for cancelling leave requests.",
             )
 
+        # Acquire lock on Employee row to serialize concurrent balance operations
+        db.execute(
+            select(Employee.id)
+            .where(Employee.id == req.employee_id)
+            .with_for_update()
+        )
+
         old_status = req.status
+        leave_year = req.start_date.year
+
+        if req.leave_type != "UNPAID" and req.working_days is not None:
+            if old_status == "PENDING":
+                has_reservation = db.scalar(
+                    select(LeaveBalanceLedger.id).where(
+                        LeaveBalanceLedger.leave_request_id == req.id,
+                        LeaveBalanceLedger.transaction_type == "RESERVATION",
+                    )
+                )
+                if has_reservation:
+                    existing_release = db.scalar(
+                        select(LeaveBalanceLedger.id).where(
+                            LeaveBalanceLedger.leave_request_id == req.id,
+                            LeaveBalanceLedger.transaction_type == "RESERVATION_RELEASE",
+                        )
+                    )
+                    if not existing_release:
+                        release_entry = LeaveBalanceLedger(
+                            leave_request_id=req.id,
+                            employee_id=req.employee_id,
+                            year=leave_year,
+                            leave_type=req.leave_type,
+                            transaction_type="RESERVATION_RELEASE",
+                            days=req.working_days,
+                            created_by_user_id=current_user.id,
+                        )
+                        db.add(release_entry)
+
+                        audit_ledger = AuditLog(
+                            actor_user_id=current_user.id,
+                            action="LEAVE_BALANCE_RELEASED",
+                            target_type="leave_request",
+                            target_id=str(req.id),
+                            metadata_={
+                                "employee_id": req.employee_id,
+                                "year": leave_year,
+                                "leave_type": req.leave_type,
+                                "days": req.working_days,
+                                "reason": "CANCELLED_FROM_PENDING",
+                            },
+                        )
+                        db.add(audit_ledger)
+            elif old_status == "APPROVED":
+                has_consumption = db.scalar(
+                    select(LeaveBalanceLedger.id).where(
+                        LeaveBalanceLedger.leave_request_id == req.id,
+                        LeaveBalanceLedger.transaction_type == "CONSUMPTION",
+                    )
+                )
+                if has_consumption:
+                    existing_release = db.scalar(
+                        select(LeaveBalanceLedger.id).where(
+                            LeaveBalanceLedger.leave_request_id == req.id,
+                            LeaveBalanceLedger.transaction_type == "CONSUMPTION_RELEASE",
+                        )
+                    )
+                    if not existing_release:
+                        release_entry = LeaveBalanceLedger(
+                            leave_request_id=req.id,
+                            employee_id=req.employee_id,
+                            year=leave_year,
+                            leave_type=req.leave_type,
+                            transaction_type="CONSUMPTION_RELEASE",
+                            days=req.working_days,
+                            created_by_user_id=current_user.id,
+                        )
+                        db.add(release_entry)
+
+                        audit_ledger = AuditLog(
+                            actor_user_id=current_user.id,
+                            action="LEAVE_BALANCE_RELEASED",
+                            target_type="leave_request",
+                            target_id=str(req.id),
+                            metadata_={
+                                "employee_id": req.employee_id,
+                                "year": leave_year,
+                                "leave_type": req.leave_type,
+                                "days": req.working_days,
+                                "reason": "CANCELLED_FROM_APPROVED",
+                            },
+                        )
+                        db.add(audit_ledger)
+
         req.status = "CANCELLED"
 
         audit = AuditLog(
@@ -501,4 +984,4 @@ class LeaveService:
 
         db.commit()
         db.refresh(req)
-        return LeaveService._to_detail(req)
+        return LeaveService._to_detail(req, db=db)

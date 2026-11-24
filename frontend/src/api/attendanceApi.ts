@@ -1,5 +1,10 @@
 import { apiFetch, apiFetchBlob } from './client';
 import type {
+  AttendanceCorrectionCreate,
+  AttendanceCorrectionFilterParams,
+  AttendanceCorrectionListResponse,
+  AttendanceCorrectionResponse,
+  AttendanceCorrectionReview,
   AttendanceExceptionListResponse,
   AttendanceFilterParams,
   AttendanceListResponse,
@@ -269,5 +274,63 @@ export async function getAttendanceExceptions(params?: {
     headers: {
       Accept: 'application/json',
     },
+  });
+}
+
+export async function createAttendanceCorrection(
+  payload: AttendanceCorrectionCreate
+): Promise<AttendanceCorrectionResponse> {
+  return apiFetch<AttendanceCorrectionResponse>(`${ATTENDANCE_BASE}/corrections`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getAttendanceCorrections(
+  params?: AttendanceCorrectionFilterParams
+): Promise<AttendanceCorrectionListResponse> {
+  const query = new URLSearchParams();
+  if (params?.employee_id !== undefined && params.employee_id !== null) {
+    query.set('employee_id', String(params.employee_id));
+  }
+  if (params?.date && params.date.trim()) {
+    query.set('date', params.date.trim());
+  }
+  if (params?.status && params.status.trim()) {
+    query.set('status', params.status.trim());
+  }
+  if (params?.limit !== undefined) {
+    query.set('limit', String(params.limit));
+  }
+  if (params?.offset !== undefined) {
+    query.set('offset', String(params.offset));
+  }
+
+  const queryString = query.toString();
+  const endpoint = queryString ? `${ATTENDANCE_BASE}/corrections?${queryString}` : `${ATTENDANCE_BASE}/corrections`;
+
+  return apiFetch<AttendanceCorrectionListResponse>(endpoint, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
+export async function reviewAttendanceCorrection(
+  correctionId: number,
+  payload: AttendanceCorrectionReview
+): Promise<AttendanceCorrectionResponse> {
+  return apiFetch<AttendanceCorrectionResponse>(`${ATTENDANCE_BASE}/corrections/${correctionId}/review`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
 }

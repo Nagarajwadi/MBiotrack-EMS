@@ -6,6 +6,10 @@ from app.db.session import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.schemas.attendance import (
+    AttendanceCorrectionCreate,
+    AttendanceCorrectionListResponse,
+    AttendanceCorrectionResponse,
+    AttendanceCorrectionReview,
     AttendanceExceptionListResponse,
     AttendanceListResponse,
     AttendancePunchCreate,
@@ -154,6 +158,7 @@ def get_attendance_report(
     start_date: str | None = Query(default=None, description="Start date (YYYY-MM-DD); defaults to 6 days prior to end_date"),
     end_date: str | None = Query(default=None, description="End date (YYYY-MM-DD); defaults to current UTC date"),
     office_id: int | None = Query(default=None, description="Filter by office ID"),
+    department: str | None = Query(default=None, description="Filter by department name"),
     employee_id: int | None = Query(default=None, description="Filter by employee ID (restricted for EMPLOYEE role)"),
     limit: int = Query(default=50, ge=1, le=100, description="Max report rows to return"),
     offset: int = Query(default=0, ge=0, description="Pagination offset"),
@@ -173,6 +178,7 @@ def get_attendance_report(
         start_date=start_date,
         end_date=end_date,
         office_id=office_id,
+        department=department,
         employee_id=employee_id,
         limit=limit,
         offset=offset,
@@ -185,6 +191,7 @@ def export_attendance_report_csv(
     start_date: str | None = Query(default=None, description="Start date (YYYY-MM-DD)"),
     end_date: str | None = Query(default=None, description="End date (YYYY-MM-DD)"),
     office_id: int | None = Query(default=None, description="Filter by office ID"),
+    department: str | None = Query(default=None, description="Filter by department name"),
     employee_id: int | None = Query(default=None, description="Filter by employee ID (restricted for EMPLOYEE role)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -200,6 +207,7 @@ def export_attendance_report_csv(
         start_date=start_date,
         end_date=end_date,
         office_id=office_id,
+        department=department,
         employee_id=employee_id,
     )
     return Response(
@@ -278,4 +286,78 @@ def get_attendance_reviews(
         attendance_date=date,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post("/corrections", response_model=AttendanceCorrectionResponse, status_code=status.HTTP_201_CREATED)
+def create_attendance_correction(
+    payload: AttendanceCorrectionCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit an attendance correction request.
+
+    - Authenticated access required (EMPLOYEE for self, MANAGER for department, ADMIN for all).
+    - Validates target employee, timezone, attendance date alignment, and prevents future timestamps.
+    - Strictly prevents duplicate pending requests of the same type for the same date.
+    - Idempotency key protected with atomic audit recording.
+    """
+    client_ip = _extract_client_ip(request)
+    return AttendanceService.create_correction(
+        db=db,
+        payload=payload,
+        current_user=current_user,
+        client_ip=client_ip,
+    )
+
+
+@router.get("/corrections", response_model=AttendanceCorrectionListResponse)
+def list_attendance_corrections(
+    employee_id: int | None = Query(default=None, description="Filter by employee ID (restricted for EMPLOYEE role)"),
+    date: str | None = Query(default=None, description="Filter by attendance date (YYYY-MM-DD)"),
+    status: str | None = Query(default=None, description="Filter by status (PENDING, APPROVED, REJECTED, or ALL)"),
+    limit: int = Query(default=50, ge=1, le=100, description="Max records to return"),
+    offset: int = Query(default=0, ge=0, description="Records offset for pagination"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Query paginated attendance corrections with role-based scoping and filters.
+
+    - EMPLOYEE: Can view only their own correction requests.
+    - MANAGER: Can view correction requests for employees in their assigned department.
+    - ADMIN: Organization-wide visibility across all correction requests.
+    """
+    return AttendanceService.list_corrections(
+        db=db,
+        current_user=current_user,
+        employee_id=employee_id,
+        attendance_date=date,
+        status_filter=status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/corrections/{correction_id}/review", response_model=AttendanceCorrectionResponse)
+def review_attendance_correction(
+    correction_id: int,
+    payload: AttendanceCorrectionReview,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Review (approve or reject) an attendance correction request.
+
+    - Accessible only by MANAGER (for department employees) or ADMIN.
+    - Strictly enforces anti-self-approval: requester cannot approve own request, and employee cannot approve own correction.
+    - Applies decision and writes atomic audit telemetry.
+    """
+    client_ip = _extract_client_ip(request)
+    return AttendanceService.review_correction(
+        db=db,
+        correction_id=correction_id,
+        payload=payload,
+        current_user=current_user,
+        client_ip=client_ip,
     )

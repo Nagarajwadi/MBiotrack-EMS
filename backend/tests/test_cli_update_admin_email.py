@@ -224,28 +224,42 @@ def test_prompt_operator_confirmation_eof_raises(monkeypatch):
 
 @pytest.fixture
 def target_admin_user(db_session: Session) -> User:
-    """Fixture creating the production initial administrator with typo email."""
-    # Clean up prior records with id=1 or email to prevent conflicts
-    db_session.execute(delete(AuditLog).where(AuditLog.target_type == "user"))
-    db_session.execute(delete(User).where(User.id == TARGET_USER_ID))
-    db_session.execute(delete(User).where(func.lower(User.email).in_([
-        EXPECTED_CURRENT_EMAIL.lower(),
-        CORRECTED_EMAIL.lower(),
-    ])))
-    db_session.commit()
+    """Fixture ensuring the production initial administrator exists with expected typo email."""
+    # Avoid unsafe delete(User) which violates fk_audit_logs_actor_user_id ON DELETE RESTRICT
+    # if immutable audit records reference this user. Instead, reassign any conflicting email
+    # on other user records and reset the target administrator's attributes in-place.
+    conflicts = list(db_session.scalars(
+        select(User).where(
+            func.lower(User.email).in_([EXPECTED_CURRENT_EMAIL.lower(), CORRECTED_EMAIL.lower()]),
+            User.id != TARGET_USER_ID,
+        )
+    ).all())
+    for c in conflicts:
+        c.email = f"conflict_{c.id}@example.com"
+    if conflicts:
+        db_session.flush()
 
-    admin = User(
-        id=TARGET_USER_ID,
-        full_name="Nagaraj Admin",
-        email=EXPECTED_CURRENT_EMAIL,
-        password_hash=hash_password("SuperSecretAdminPass123!"),
-        role="ADMIN",
-        employee_id=None,
-        is_active=True,
-    )
-    db_session.add(admin)
-    db_session.commit()
-    db_session.refresh(admin)
+    admin = db_session.get(User, TARGET_USER_ID)
+    if admin is None:
+        admin = User(
+            id=TARGET_USER_ID,
+            full_name="Nagaraj Admin",
+            email=EXPECTED_CURRENT_EMAIL,
+            password_hash=hash_password("SuperSecretAdminPass123!"),
+            role="ADMIN",
+            employee_id=None,
+            is_active=True,
+        )
+        db_session.add(admin)
+    else:
+        admin.full_name = "Nagaraj Admin"
+        admin.email = EXPECTED_CURRENT_EMAIL
+        admin.password_hash = hash_password("SuperSecretAdminPass123!")
+        admin.role = "ADMIN"
+        admin.employee_id = None
+        admin.is_active = True
+
+    db_session.flush()
     return admin
 
 
@@ -351,20 +365,22 @@ def test_non_admin_role_rejected(db_session: Session):
 
 def test_inactive_user_rejected(db_session: Session):
     """Deactivated administrator account is refused."""
-    db_session.execute(delete(User).where(User.id == 3))
-    db_session.commit()
-
-    deactivated_admin = User(
-        id=3,
-        full_name="Deactivated Admin",
-        email=EXPECTED_CURRENT_EMAIL,
-        password_hash=hash_password("ValidPassword123!"),
-        role="ADMIN",
-        employee_id=None,
-        is_active=False,
-    )
-    db_session.add(deactivated_admin)
-    db_session.commit()
+    deactivated_admin = db_session.get(User, 3)
+    if deactivated_admin is None:
+        deactivated_admin = User(
+            id=3,
+            full_name="Deactivated Admin",
+            email=EXPECTED_CURRENT_EMAIL,
+            password_hash=hash_password("ValidPassword123!"),
+            role="ADMIN",
+            employee_id=None,
+            is_active=False,
+        )
+        db_session.add(deactivated_admin)
+    else:
+        deactivated_admin.email = EXPECTED_CURRENT_EMAIL
+        deactivated_admin.is_active = False
+    db_session.flush()
 
     with pytest.raises(EmailUpdateRefusedError) as exc:
         execute_email_update(

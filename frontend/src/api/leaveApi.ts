@@ -1,5 +1,9 @@
 import { apiFetch } from './client';
 import type {
+  EmployeeLeaveBalanceSummary,
+  EmployeeLeaveEntitlement,
+  LeaveBalanceLedgerItem,
+  LeaveEntitlementDefault,
   LeaveFilterParams,
   LeaveRequestCreatePayload,
   LeaveRequestDetail,
@@ -92,5 +96,103 @@ export async function cancelLeaveRequest(id: number): Promise<LeaveRequestDetail
     headers: {
       Accept: 'application/json',
     },
+  });
+}
+
+export async function getEmployeeLeaveBalances(
+  employeeId: number,
+  year?: number
+): Promise<EmployeeLeaveBalanceSummary> {
+  const query = year ? `?year=${year}` : '';
+  return apiFetch<EmployeeLeaveBalanceSummary>(`${LEAVES_BASE}/balances/${employeeId}${query}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
+export async function getEmployeeBalanceLedger(
+  employeeId: number,
+  year?: number
+): Promise<LeaveBalanceLedgerItem[]> {
+  const query = year ? `?year=${year}` : '';
+  return apiFetch<LeaveBalanceLedgerItem[]>(`${LEAVES_BASE}/ledger/${employeeId}${query}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
+export async function getEntitlementDefaults(
+  year?: number
+): Promise<LeaveEntitlementDefault[]> {
+  const query = year ? `?year=${year}` : '';
+  return apiFetch<LeaveEntitlementDefault[]>(`${LEAVES_BASE}/entitlements/defaults${query}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
+export async function setEntitlementDefault(payload: {
+  year: number;
+  leave_type: string;
+  allocated_days: number;
+}): Promise<LeaveEntitlementDefault> {
+  return apiFetch<LeaveEntitlementDefault>(`${LEAVES_BASE}/entitlements/defaults`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEntitlementDefault(defaultId: number): Promise<void> {
+  await apiFetch<void>(`${LEAVES_BASE}/entitlements/defaults/${defaultId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getEntitlementOverrides(
+  year?: number,
+  employeeId?: number
+): Promise<EmployeeLeaveEntitlement[]> {
+  const params = new URLSearchParams();
+  if (year !== undefined) params.set('year', String(year));
+  if (employeeId !== undefined) params.set('employee_id', String(employeeId));
+  const query = params.toString() ? `?${params.toString()}` : '';
+
+  return apiFetch<EmployeeLeaveEntitlement[]>(`${LEAVES_BASE}/entitlements/overrides${query}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+}
+
+export async function setEntitlementOverride(payload: {
+  employee_id: number;
+  year: number;
+  leave_type: string;
+  allocated_days: number;
+}): Promise<EmployeeLeaveEntitlement> {
+  return apiFetch<EmployeeLeaveEntitlement>(`${LEAVES_BASE}/entitlements/overrides`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEntitlementOverride(overrideId: number): Promise<void> {
+  await apiFetch<void>(`${LEAVES_BASE}/entitlements/overrides/${overrideId}`, {
+    method: 'DELETE',
   });
 }

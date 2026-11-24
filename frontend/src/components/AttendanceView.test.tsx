@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as attendanceApi from '../api/attendanceApi';
 import * as deviceApi from '../api/deviceApi';
+import * as employeeApi from '../api/employeeApi';
 import {
   mockAdminUser,
   mockEmployeeUser,
@@ -178,6 +179,8 @@ describe('AttendanceView component', () => {
       roaming_punch_count: 1,
       total_records: 3,
       eligible_employee_count: 3,
+      total_worked_hours: 8.0,
+      average_daily_worked_hours: 8.0,
     },
     items: [
       {
@@ -195,6 +198,8 @@ describe('AttendanceView component', () => {
         has_roaming: false,
         roaming_count: 0,
         status: 'NORMAL',
+        work_duration_minutes: 480,
+        work_duration_formatted: '8h 0m',
       },
       {
         employee_id: 1,
@@ -211,6 +216,8 @@ describe('AttendanceView component', () => {
         has_roaming: true,
         roaming_count: 1,
         status: 'NORMAL',
+        work_duration_minutes: null,
+        work_duration_formatted: null,
       },
       {
         employee_id: 2,
@@ -227,6 +234,8 @@ describe('AttendanceView component', () => {
         has_roaming: false,
         roaming_count: 0,
         status: 'NO_PUNCH',
+        work_duration_minutes: null,
+        work_duration_formatted: null,
       },
     ],
     total_items: 3,
@@ -250,6 +259,30 @@ describe('AttendanceView component', () => {
         is_active: true,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(employeeApi, 'getEmployees').mockResolvedValue([
+      {
+        id: 1,
+        first_name: 'Alice',
+        last_name: 'Smith',
+        employee_code: 'EMP-001',
+        department: 'Engineering',
+        designation: 'Engineer',
+        joining_date: '2026-01-01',
+        is_active: true,
+        email: 'alice@example.com',
+      },
+      {
+        id: 2,
+        first_name: 'Bob',
+        last_name: 'Roamer',
+        employee_code: 'EMP-002',
+        department: 'Sales',
+        designation: 'Sales Rep',
+        joining_date: '2026-01-01',
+        is_active: true,
+        email: 'bob@example.com',
       },
     ]);
   });
@@ -398,6 +431,26 @@ describe('AttendanceView component', () => {
       expect(screen.getByRole('button', { name: /🔴 check out/i })).toBeInTheDocument();
     });
 
+    it('opens manual punch modal with employee dropdown when admin clicks Manual Punch', async () => {
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
+      const user = userEvent.setup();
+      render(<AttendanceView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /⏱️ manual punch\.\.\./i })).toBeInTheDocument();
+      });
+
+      const manualPunchBtn = screen.getByRole('button', { name: /⏱️ manual punch\.\.\./i });
+      await user.click(manualPunchBtn);
+
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /confirmation/i })).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByLabelText(/target employee/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('option', { name: /Alice Smith \(EMP-001\) — Engineering/i })).toBeInTheDocument();
+    });
+
     it('renders daily summary cards with correct metrics and neutral "No punch recorded" label', async () => {
       vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
 
@@ -469,6 +522,71 @@ describe('AttendanceView component', () => {
       await user.click(closeBtn);
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('clicking Request Correction from Inspect Punches closes Inspect Punches and opens Attendance Correction dialog with TIMESTAMP_ADJUSTMENT on normal attendance day', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
+
+      render(<AttendanceView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('row-emp-EMP-001')).toBeInTheDocument();
+      });
+
+      // Open Inspect Punches for Alice
+      const inspectBtn = screen.getByRole('button', { name: /inspect punches for alice smith/i });
+      await user.click(inspectBtn);
+
+      const inspectModal = screen.getByRole('dialog', { name: /punch details: alice smith/i });
+      expect(inspectModal).toBeInTheDocument();
+
+      // Click "Request Correction" in modal footer
+      const requestCorrectionBtn = within(inspectModal).getByRole('button', { name: 'Request Correction' });
+      await user.click(requestCorrectionBtn);
+
+      // Verify Inspect Punches dialog is CLOSED
+      expect(screen.queryByRole('dialog', { name: /punch details: alice smith/i })).not.toBeInTheDocument();
+
+      // Verify Request Attendance Correction dialog is OPEN and VISIBLE
+      const corrModal = screen.getByRole('dialog', { name: /request attendance correction/i });
+      expect(corrModal).toBeInTheDocument();
+      expect(within(corrModal).getByDisplayValue(/Alice Smith \(EMP-001\)/i)).toBeInTheDocument();
+      expect(within(corrModal).getByLabelText(/Attendance Date/i)).toHaveValue('2026-11-10');
+
+      // On a normal attendance day with punches, it must default to TIMESTAMP_ADJUSTMENT
+      expect(within(corrModal).getByLabelText(/Correction Type/i)).toHaveValue('TIMESTAMP_ADJUSTMENT');
+    });
+
+    it('clicking Adjust on a specific punch row in Inspect Punches passes the correct original event ID and closes Inspect Punches', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(attendanceApi, 'getDailyAttendanceOperations').mockResolvedValue(sampleDailyOpsResponse);
+
+      render(<AttendanceView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('row-emp-EMP-001')).toBeInTheDocument();
+      });
+
+      // Open Inspect Punches for Alice
+      const inspectBtn = screen.getByRole('button', { name: /inspect punches for alice smith/i });
+      await user.click(inspectBtn);
+
+      expect(screen.getByRole('dialog', { name: /punch details: alice smith/i })).toBeInTheDocument();
+
+      // Click "Adjust" on the CHECK_OUT punch row
+      const adjustBtn = screen.getByRole('button', { name: /adjust CHECK_OUT punch at/i });
+      await user.click(adjustBtn);
+
+      // Inspect Punches modal is closed
+      expect(screen.queryByRole('dialog', { name: /punch details: alice smith/i })).not.toBeInTheDocument();
+
+      // Attendance Correction modal is open with TIMESTAMP_ADJUSTMENT and punch 102 preselected
+      const corrModal = screen.getByRole('dialog', { name: /request attendance correction/i });
+      expect(corrModal).toBeInTheDocument();
+      expect(within(corrModal).getByLabelText(/Correction Type/i)).toHaveValue('TIMESTAMP_ADJUSTMENT');
+      const select = within(corrModal).getByLabelText(/Original Punch to Adjust/i) as HTMLSelectElement;
+      expect(select.value).toBe('102');
     });
 
     it('submits daily operations filters correctly and resets them on request', async () => {
@@ -893,6 +1011,174 @@ describe('AttendanceView component', () => {
       await waitFor(() => {
         expect(screen.getByText('No Report Records Found')).toBeInTheDocument();
       });
+    });
+
+    it('renders work duration column and summary metrics', async () => {
+      vi.spyOn(attendanceApi, 'getAttendanceReport').mockResolvedValue(sampleReportResponse);
+
+      render(
+        <AttendanceView
+          currentUser={mockAdminUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { level: 2, name: 'Organization Attendance Reports' })
+        ).toBeInTheDocument();
+      });
+
+      // Verify Work Duration column header
+      expect(screen.getByRole('columnheader', { name: /work duration/i })).toBeInTheDocument();
+
+      // Verify Work Duration table cells
+      const durationCells = screen.getAllByTestId('cell-report-duration');
+      expect(durationCells).toHaveLength(3);
+      expect(durationCells[0]).toHaveTextContent('8h 0m');
+      expect(durationCells[1]).toHaveTextContent('—');
+      expect(durationCells[2]).toHaveTextContent('—');
+
+      // Verify Summary cards for Total Worked Hours and Average Daily Hours
+      const totalHoursCard = screen.getByTestId('card-report-total-hours');
+      expect(totalHoursCard).toHaveTextContent('8h');
+
+      const avgHoursCard = screen.getByTestId('card-report-average-hours');
+      expect(avgHoursCard).toHaveTextContent('8h');
+    });
+
+    it('handles department filter across roles and forwards to API', async () => {
+      const user = userEvent.setup();
+      const reportSpy = vi
+        .spyOn(attendanceApi, 'getAttendanceReport')
+        .mockResolvedValue(sampleReportResponse);
+
+      // 1. Admin: editable input is present and forwarded on generate report
+      const { rerender } = render(
+        <AttendanceView
+          currentUser={mockAdminUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('filter-report-department')).toBeInTheDocument();
+      });
+
+      const deptInput = screen.getByTestId('filter-report-department');
+      await user.type(deptInput, 'Engineering');
+
+      const submitBtn = screen.getByRole('button', { name: /generate report/i });
+      await user.click(submitBtn);
+
+      await waitFor(() => {
+        expect(reportSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            department: 'Engineering',
+          })
+        );
+      });
+
+      // 2. Manager: locked department badge is displayed; editable input is not rendered
+      rerender(
+        <AttendanceView
+          currentUser={mockManagerUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('filter-report-department-locked')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('filter-report-department-locked')).toHaveValue('Engineering');
+      expect(screen.queryByTestId('filter-report-department')).not.toBeInTheDocument();
+
+      // 3. Employee: no department filter controls are rendered
+      rerender(
+        <AttendanceView
+          currentUser={mockEmployeeUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { level: 2, name: 'My Attendance Reports' })).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('filter-report-department')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('filter-report-department-locked')).not.toBeInTheDocument();
+    });
+
+    it('forwards department filter to CSV export', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(attendanceApi, 'getAttendanceReport').mockResolvedValue(sampleReportResponse);
+      const csvBlob = new Blob(['Employee Code,Employee Name,Work Duration\nEMP-001,Alice Smith,8h 0m'], {
+        type: 'text/csv',
+      });
+      const exportSpy = vi
+        .spyOn(attendanceApi, 'downloadAttendanceReportCsv')
+        .mockResolvedValue(csvBlob);
+
+      window.URL.createObjectURL = vi.fn().mockReturnValue('blob:http://localhost/test-uuid');
+      window.URL.revokeObjectURL = vi.fn();
+
+      render(
+        <AttendanceView
+          currentUser={mockAdminUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('filter-report-department')).toBeInTheDocument();
+      });
+
+      const deptInput = screen.getByTestId('filter-report-department');
+      await user.type(deptInput, 'Operations');
+
+      const submitBtn = screen.getByRole('button', { name: /generate report/i });
+      await user.click(submitBtn);
+
+      const exportBtn = screen.getByTestId('export-csv-btn');
+      await user.click(exportBtn);
+
+      await waitFor(() => {
+        expect(exportSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            department: 'Operations',
+          })
+        );
+      });
+    });
+
+    it('applies minimum column widths and non-wrapping styles to report table', async () => {
+      vi.spyOn(attendanceApi, 'getAttendanceReport').mockResolvedValue(sampleReportResponse);
+
+      render(
+        <AttendanceView
+          currentUser={mockAdminUser}
+          sessionEpoch={1}
+          initialTab="reports"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('table', { name: /attendance report records/i })).toBeInTheDocument();
+      });
+
+      const table = screen.getByRole('table', { name: /attendance report records/i });
+      expect(table).toHaveStyle({ minWidth: '1220px' });
+
+      // Check column headers exist with nowrap
+      const headers = screen.getAllByRole('columnheader');
+      expect(headers).toHaveLength(9);
+      expect(screen.getByRole('columnheader', { name: /punch count/i })).toHaveStyle({ whiteSpace: 'nowrap' });
+      expect(screen.getByRole('columnheader', { name: /work duration/i })).toHaveStyle({ whiteSpace: 'nowrap' });
+      expect(screen.getByRole('columnheader', { name: /^status$/i })).toHaveStyle({ minWidth: '170px' });
     });
   });
 });

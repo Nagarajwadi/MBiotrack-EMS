@@ -1,7 +1,7 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthProvider } from './AuthContext';
+import { AuthProvider, AUTH_STORAGE_KEY } from './AuthContext';
 import { useAuth } from './useAuth';
 import * as authApi from '../api/authApi';
 import { ApiError } from '../api/apiError';
@@ -73,7 +73,7 @@ describe('AuthContext and useAuth', () => {
     expect(result.current.sessionEpoch).toBe(1);
   });
 
-  it('strictly retains JWT in memory and never writes tokens to localStorage or sessionStorage', async () => {
+  it('stores JWT in sessionStorage on successful login and never writes to localStorage', async () => {
     vi.mocked(authApi.login).mockResolvedValueOnce(mockTokenResponse);
     vi.mocked(authApi.getCurrentUser).mockResolvedValueOnce(mockAdminUser);
 
@@ -87,15 +87,171 @@ describe('AuthContext and useAuth', () => {
     });
 
     expect(result.current.isAuthenticated).toBe(true);
-    // Verify no persistence in browser storage
+    // Verify persistence in sessionStorage under AUTH_STORAGE_KEY
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBe(mockTokenResponse.access_token);
+
+    // Verify absolute zero persistence in localStorage
+    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem('token')).toBeNull();
     expect(localStorage.getItem('access_token')).toBeNull();
     expect(localStorage.getItem('auth')).toBeNull();
     expect(localStorage.length).toBe(0);
+  });
 
-    expect(sessionStorage.getItem('token')).toBeNull();
-    expect(sessionStorage.getItem('access_token')).toBeNull();
-    expect(sessionStorage.length).toBe(0);
+  it('restores authenticated user from sessionStorage on mount when token is valid and active', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+    vi.mocked(authApi.getCurrentUser).mockResolvedValueOnce(mockAdminUser);
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    // Initial state before restoration resolves is 'restoring'
+    expect(result.current.status).toBe('restoring');
+    expect(result.current.isAuthenticated).toBe(false);
+
+    await waitFor(() => {
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+
+    expect(authApi.getCurrentUser).toHaveBeenCalledWith(mockTokenResponse.access_token);
+    expect(result.current.status).toBe('authenticated');
+    expect(result.current.user).toEqual(mockAdminUser);
+    expect(result.current.sessionEpoch).toBe(1);
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBe(mockTokenResponse.access_token);
+  });
+
+  it('removes token from sessionStorage and resets to unauthenticated if token validation returns 401', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+    vi.mocked(authApi.getCurrentUser).mockRejectedValueOnce(
+      new ApiError(401, 'Token expired')
+    );
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('unauthenticated');
+    });
+
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.user).toBeNull();
+  });
+
+  it('removes token from sessionStorage and resets to unauthenticated if /auth/me returns inactive user', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+    vi.mocked(authApi.getCurrentUser).mockResolvedValueOnce(mockInactiveUser);
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('unauthenticated');
+    });
+
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.user).toBeNull();
+  });
+
+  it('preserves stored token in sessionStorage during temporary network error and allows retry', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+    vi.mocked(authApi.getCurrentUser).mockRejectedValueOnce(
+      new ApiError(0, 'Unable to connect to backend service')
+    );
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.restorationError).not.toBeNull();
+    });
+
+    // Stored token is NOT destroyed
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBe(mockTokenResponse.access_token);
+    expect(result.current.status).toBe('restoring');
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.restorationError).toContain('Unable to connect to backend service');
+
+    // Recover via retryRestoration once network is back
+    vi.mocked(authApi.getCurrentUser).mockResolvedValueOnce(mockAdminUser);
+
+    await act(async () => {
+      await result.current.retryRestoration();
+    });
+
+    expect(result.current.status).toBe('authenticated');
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.user).toEqual(mockAdminUser);
+    expect(result.current.restorationError).toBeNull();
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBe(mockTokenResponse.access_token);
+  });
+
+  it('prevents duplicate concurrent session restoration calls', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+
+    let resolveUser!: (u: typeof mockAdminUser) => void;
+    const pendingPromise = new Promise<typeof mockAdminUser>((resolve) => {
+      resolveUser = resolve;
+    });
+    vi.mocked(authApi.getCurrentUser).mockReturnValueOnce(pendingPromise);
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    expect(result.current.status).toBe('restoring');
+
+    // Trigger concurrent retryRestoration while initial is in flight
+    await act(async () => {
+      await result.current.retryRestoration();
+    });
+
+    // authApi.getCurrentUser should only have been called once
+    expect(authApi.getCurrentUser).toHaveBeenCalledTimes(1);
+
+    // Complete the in-flight request
+    await act(async () => {
+      resolveUser(mockAdminUser);
+      await pendingPromise;
+    });
+
+    await waitFor(() => {
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+  });
+
+  it('safely handles unmount during in-flight restoration without throwing', async () => {
+    sessionStorage.setItem(AUTH_STORAGE_KEY, mockTokenResponse.access_token);
+
+    let resolveUser!: (u: typeof mockAdminUser) => void;
+    const pendingPromise = new Promise<typeof mockAdminUser>((resolve) => {
+      resolveUser = resolve;
+    });
+    vi.mocked(authApi.getCurrentUser).mockReturnValueOnce(pendingPromise);
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+    const { unmount } = renderHook(() => useAuth(), { wrapper });
+
+    // Unmount while request is pending
+    unmount();
+
+    // Resolving after unmount must not throw error
+    await act(async () => {
+      resolveUser(mockAdminUser);
+      await pendingPromise;
+    });
   });
 
   it('leaves state unauthenticated when login endpoint fails', async () => {
@@ -244,6 +400,7 @@ describe('AuthContext and useAuth', () => {
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.user).toBeNull();
     expect(result.current.sessionEpoch).toBe(2);
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
 
     expect(authApi.logout).toHaveBeenCalledTimes(1);
     expect(authApi.logout).toHaveBeenCalledWith(mockTokenResponse.access_token);
@@ -264,6 +421,7 @@ describe('AuthContext and useAuth', () => {
       await result.current.login(mockLoginCredentials);
     });
     expect(result.current.isAuthenticated).toBe(true);
+    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBe(mockTokenResponse.access_token);
     const epochAtLogin = result.current.sessionEpoch; // 1
 
     // Trigger 401 unauthorized handling via simulated client callback
@@ -290,6 +448,7 @@ describe('AuthContext and useAuth', () => {
       expect(result.current.isAuthenticated).toBe(false);
       expect(result.current.user).toBeNull();
       expect(result.current.sessionEpoch).toBe(epochAtLogin + 1);
+      expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
       expect(onSessionExpiredMock).toHaveBeenCalledTimes(1);
     } finally {
       globalThis.fetch = originalFetch;

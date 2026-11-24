@@ -3,6 +3,7 @@ import type {
   PasswordResetPayload,
   UserAccount,
   UserCreatePayload,
+  UserRoleUpdatePayload,
   UserStatusUpdatePayload,
 } from '../types/userManagement';
 
@@ -46,6 +47,20 @@ export async function updateUserStatus(
   payload: UserStatusUpdatePayload
 ): Promise<UserAccount> {
   return apiFetch<UserAccount>(`${BASE_URL}/${userId}/status`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateUserRole(
+  userId: number,
+  payload: UserRoleUpdatePayload
+): Promise<UserAccount> {
+  return apiFetch<UserAccount>(`${BASE_URL}/${userId}/role`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',

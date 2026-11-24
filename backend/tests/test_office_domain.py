@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 from psycopg.types.range import Range
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -16,101 +16,24 @@ from app.models.user import User
 settings = get_settings()
 
 
+
+
 @pytest.fixture
-def dev_db_session():
-    """Provide a database session targeting mbiotrack_dev isolated in a transaction savepoint.
-
-    All operations are rolled back on fixture teardown, guaranteeing zero persisted test data.
-    """
-    assert settings.DATABASE_URL is not None, "DATABASE_URL must be configured"
-    engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
-    connection = engine.connect()
-    transaction = connection.begin()
-
-    session = Session(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-        expire_on_commit=False,
+def active_employee(dev_db_session: Session) -> Employee:
+    """Seed an active employee for office assignment tests."""
+    emp = Employee(
+        employee_code="EMP-ASSIGN-01",
+        first_name="Active",
+        last_name="Assignee",
+        email="assignee@example.com",
+        department="Engineering",
+        designation="Software Engineer",
+        joining_date=date(2025, 1, 1),
+        is_active=True,
     )
-
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
-        engine.dispose()
-
-
-@pytest.fixture
-def dev_client(dev_db_session):
-    """FastAPI TestClient with get_db overridden to use dev_db_session."""
-    def override_get_db():
-        yield dev_db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def admin_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "ADMIN", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active ADMIN user"
-    return user
-
-
-@pytest.fixture
-def manager_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "MANAGER", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active MANAGER user"
-    return user
-
-
-@pytest.fixture
-def employee_user(dev_db_session) -> User:
-    user = dev_db_session.scalar(select(User).where(User.role == "EMPLOYEE", User.is_active.is_(True)))
-    assert user is not None, "mbiotrack_dev must contain an active EMPLOYEE user"
-    return user
-
-
-@pytest.fixture
-def admin_headers(admin_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=admin_user.id,
-        extra_claims={
-            "role": admin_user.role,
-            "pwd": derive_pwd_fingerprint(admin_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def manager_headers(manager_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=manager_user.id,
-        extra_claims={
-            "role": manager_user.role,
-            "pwd": derive_pwd_fingerprint(manager_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def employee_headers(employee_user: User) -> dict[str, str]:
-    token = create_access_token(
-        subject=employee_user.id,
-        extra_claims={
-            "role": employee_user.role,
-            "pwd": derive_pwd_fingerprint(employee_user.password_hash),
-        },
-    )
-    return {"Authorization": f"Bearer {token}"}
+    dev_db_session.add(emp)
+    dev_db_session.flush()
+    return emp
 
 
 # ============================================================================
@@ -239,7 +162,7 @@ def test_office_update_and_deactivate(dev_client, admin_headers, manager_headers
 # 2. EMPLOYEE OFFICE ASSIGNMENT & GIST OVERLAP PROTECTION TESTS
 # ============================================================================
 
-def test_create_assignment_success(dev_client, admin_headers, dev_db_session):
+def test_create_assignment_success(dev_client, admin_headers, dev_db_session, active_employee):
     # Setup test office
     off = Office(name="Hyderabad Hub", code="HYD-01", timezone="Asia/Kolkata")
     dev_db_session.add(off)
@@ -263,7 +186,7 @@ def test_create_assignment_success(dev_client, admin_headers, dev_db_session):
     assert data["is_primary"] is True
 
 
-def test_adjacent_assignments_succeed_tc10_tc53(dev_client, admin_headers, dev_db_session):
+def test_adjacent_assignments_succeed_tc10_tc53(dev_client, admin_headers, dev_db_session, active_employee):
     """TC-10 & TC-53: Adjacent date ranges [T1, T2) and [T2, T3) with microsecond touching bounds succeed."""
     off1 = Office(name="Office A", code="OFC-A", timezone="Asia/Kolkata")
     off2 = Office(name="Office B", code="OFC-B", timezone="Asia/Kolkata")
@@ -295,7 +218,7 @@ def test_adjacent_assignments_succeed_tc10_tc53(dev_client, admin_headers, dev_d
     assert res2.status_code == 201, f"Adjacent range failed unexpectedly: {res2.text}"
 
 
-def test_overlapping_assignment_rejected_tc09_tc51(dev_client, admin_headers, dev_db_session):
+def test_overlapping_assignment_rejected_tc09_tc51(dev_client, admin_headers, dev_db_session, active_employee):
     """TC-09 & TC-51: Overlapping date ranges for same employee abort with 23P01 -> HTTP 409 Conflict."""
     off1 = Office(name="Office C", code="OFC-C", timezone="Asia/Kolkata")
     off2 = Office(name="Office D", code="OFC-D", timezone="Asia/Kolkata")
@@ -328,7 +251,7 @@ def test_overlapping_assignment_rejected_tc09_tc51(dev_client, admin_headers, de
     assert "overlapping" in res2.json()["detail"].lower()
 
 
-def test_invalid_date_range_rejected(dev_client, admin_headers, dev_db_session):
+def test_invalid_date_range_rejected(dev_client, admin_headers, dev_db_session, active_employee):
     """valid_to must be strictly greater than valid_from."""
     off = Office(name="Office E", code="OFC-E", timezone="Asia/Kolkata")
     dev_db_session.add(off)
@@ -359,7 +282,7 @@ def test_invalid_date_range_rejected(dev_client, admin_headers, dev_db_session):
     assert res_eq.status_code == 422
 
 
-def test_assignment_inactive_target_rejected(dev_client, admin_headers, dev_db_session):
+def test_assignment_inactive_target_rejected(dev_client, admin_headers, dev_db_session, active_employee):
     active_off = Office(name="Active Office", code="ACT-01", timezone="Asia/Kolkata", is_active=True)
     inactive_off = Office(name="Inactive Office", code="INACT-01", timezone="Asia/Kolkata", is_active=False)
     dev_db_session.add_all([active_off, inactive_off])

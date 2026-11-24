@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as assignmentApi from '../api/assignmentApi';
 import * as holidayApi from '../api/holidayApi';
 import * as leaveApi from '../api/leaveApi';
 import * as officeApi from '../api/officeApi';
@@ -50,6 +51,7 @@ describe('LeaveAndHolidayView component', () => {
       leave_type: 'ANNUAL',
       reason: 'Personal holiday',
       status: 'PENDING',
+      working_days: 3,
       decision_by_user_id: null,
       decision_by_user_name: null,
       decision_notes: null,
@@ -68,6 +70,7 @@ describe('LeaveAndHolidayView component', () => {
       leave_type: 'SICK',
       reason: 'Doctor appointment',
       status: 'PENDING',
+      working_days: 1,
       decision_by_user_id: null,
       decision_by_user_name: null,
       decision_notes: null,
@@ -86,6 +89,7 @@ describe('LeaveAndHolidayView component', () => {
       leave_type: 'CASUAL',
       reason: 'Family visit',
       status: 'APPROVED',
+      working_days: 2,
       decision_by_user_id: 1,
       decision_by_user_name: 'Admin User',
       decision_notes: 'Approved as planned',
@@ -104,6 +108,7 @@ describe('LeaveAndHolidayView component', () => {
       leave_type: 'ANNUAL',
       reason: 'Weekend trip',
       status: 'PENDING',
+      working_days: null, // Legacy request with NULL duration
       decision_by_user_id: null,
       decision_by_user_name: null,
       decision_notes: null,
@@ -155,12 +160,25 @@ describe('LeaveAndHolidayView component', () => {
       items: sampleHolidays,
       total: sampleHolidays.length,
     });
+    vi.spyOn(assignmentApi, 'getAssignments').mockResolvedValue([
+      {
+        id: 1,
+        employee_id: 1,
+        office_id: 2,
+        valid_from: '2026-01-01T00:00:00Z',
+        valid_to: '2027-01-01T00:00:00Z',
+        is_primary: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
     vi.spyOn(leaveApi, 'submitLeaveRequest').mockResolvedValue(sampleLeaves[0]);
     vi.spyOn(leaveApi, 'reviewLeaveRequest').mockResolvedValue(sampleLeaves[1]);
     vi.spyOn(leaveApi, 'cancelLeaveRequest').mockResolvedValue(sampleLeaves[0]);
     vi.spyOn(holidayApi, 'createHoliday').mockResolvedValue(sampleHolidays[0]);
     vi.spyOn(holidayApi, 'updateHoliday').mockResolvedValue(sampleHolidays[0]);
     vi.spyOn(holidayApi, 'deleteHoliday').mockResolvedValue(undefined);
+    vi.spyOn(leaveApi, 'getEmployeeBalanceLedger').mockResolvedValue([]);
   });
 
   describe('Leave Requests tab rendering and interactions', () => {
@@ -178,6 +196,9 @@ describe('LeaveAndHolidayView component', () => {
       expect(screen.getByText('Personal holiday')).toBeInTheDocument();
       expect(screen.getByText('Doctor appointment')).toBeInTheDocument();
       expect(screen.getAllByText('Jane Colleague').length).toBeGreaterThan(0);
+      expect(screen.getByText('3 working days')).toBeInTheDocument();
+      expect(screen.getByText('1 working day')).toBeInTheDocument();
+      expect(screen.getByText('Legacy — duration unavailable')).toBeInTheDocument();
     });
 
     it('strictly blocks self-approval on pending request owned by logged-in user', async () => {
@@ -270,6 +291,45 @@ describe('LeaveAndHolidayView component', () => {
           expect.objectContaining({
             leave_type: 'ANNUAL',
             reason: 'Taking a short break',
+          })
+        );
+      });
+    });
+
+    it('submits a new leave request with optional holidays selected via LeaveModal', async () => {
+      const user = userEvent.setup();
+      render(<LeaveAndHolidayView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      const requestBtn = screen.getByTestId('request-leave-btn');
+      await user.click(requestBtn);
+
+      expect(screen.getByRole('heading', { level: 2, name: /request leave/i })).toBeInTheDocument();
+
+      const startDateInput = screen.getByTestId('leave-start-date-input');
+      const endDateInput = screen.getByTestId('leave-end-date-input');
+      fireEvent.change(startDateInput, { target: { value: '2026-11-14' } });
+      fireEvent.change(endDateInput, { target: { value: '2026-11-16' } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('optional-holiday-2026-11-15')).toBeInTheDocument();
+      });
+
+      const optCheckbox = screen.getByTestId('optional-holiday-2026-11-15');
+      await user.click(optCheckbox);
+
+      const reasonInput = screen.getByTestId('leave-reason-input');
+      await user.type(reasonInput, 'Taking break with optional holiday');
+
+      const submitBtn = screen.getByTestId('submit-leave-btn');
+      await user.click(submitBtn);
+
+      await waitFor(() => {
+        expect(leaveApi.submitLeaveRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            leave_type: 'ANNUAL',
+            start_date: '2026-11-14',
+            end_date: '2026-11-16',
+            optional_holiday_dates: ['2026-11-15'],
           })
         );
       });
@@ -479,6 +539,62 @@ describe('LeaveAndHolidayView component', () => {
           })
         );
       });
+    });
+
+    it('allows Employee to open their own Balance History modal from header action', async () => {
+      const user = userEvent.setup();
+      render(<LeaveAndHolidayView currentUser={mockEmployeeUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('view-my-balance-history-btn')).toBeInTheDocument();
+      });
+
+      const historyBtn = screen.getByTestId('view-my-balance-history-btn');
+      await user.click(historyBtn);
+
+      expect(await screen.findByTestId('leave-balance-ledger-modal')).toBeInTheDocument();
+      expect(leaveApi.getEmployeeBalanceLedger).toHaveBeenCalledWith(
+        mockEmployeeUser.employee_id,
+        expect.any(Number)
+      );
+    });
+
+    it('allows Manager or Admin to view balance ledger for a specific employee via row action', async () => {
+      const user = userEvent.setup();
+      render(<LeaveAndHolidayView currentUser={mockManagerUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('view-ledger-btn-102')).toBeInTheDocument();
+      });
+
+      const rowLedgerBtn = screen.getByTestId('view-ledger-btn-102');
+      await user.click(rowLedgerBtn);
+
+      expect(await screen.findByTestId('leave-balance-ledger-modal')).toBeInTheDocument();
+      // Leave 102 belongs to employee_id: 2
+      expect(leaveApi.getEmployeeBalanceLedger).toHaveBeenCalledWith(2, expect.any(Number));
+    });
+
+    it('allows Manager or Admin to view balance ledger for an employee entered in filter', async () => {
+      const user = userEvent.setup();
+      render(<LeaveAndHolidayView currentUser={mockAdminUser} sessionEpoch={1} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('leave-employee-id-filter')).toBeInTheDocument();
+      });
+
+      const empIdFilter = screen.getByTestId('leave-employee-id-filter');
+      fireEvent.change(empIdFilter, { target: { value: '5' } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('view-filtered-employee-ledger-btn')).toBeInTheDocument();
+      });
+
+      const filterLedgerBtn = screen.getByTestId('view-filtered-employee-ledger-btn');
+      await user.click(filterLedgerBtn);
+
+      expect(await screen.findByTestId('leave-balance-ledger-modal')).toBeInTheDocument();
+      expect(leaveApi.getEmployeeBalanceLedger).toHaveBeenCalledWith(5, expect.any(Number));
     });
   });
 });

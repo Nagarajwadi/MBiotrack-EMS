@@ -42,13 +42,73 @@ export interface DailyPunchDetail {
   id: number;
   punch_type: string;
   event_timestamp: string;
-  device_id: number;
+  device_id: number | null;
   device_name: string | null;
   device_code: string | null;
-  office_id: number;
+  office_id: number | null;
   office_name: string | null;
   office_code: string | null;
   is_roaming: boolean;
+  is_corrected?: boolean;
+  correction_id?: number | null;
+}
+
+export type AttendanceCorrectionType = 'MISSING_CHECK_IN' | 'MISSING_CHECK_OUT' | 'TIMESTAMP_ADJUSTMENT';
+export type AttendanceCorrectionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface AttendanceCorrectionCreate {
+  employee_id: number;
+  attendance_date: string;
+  correction_type: AttendanceCorrectionType;
+  proposed_timestamp: string;
+  original_event_id?: number | null;
+  reason: string;
+  idempotency_key: string;
+}
+
+export interface AttendanceCorrectionReview {
+  status: 'APPROVED' | 'REJECTED';
+  review_notes?: string | null;
+}
+
+export interface AttendanceCorrectionResponse {
+  id: number;
+  employee_id: number;
+  employee_name: string | null;
+  employee_code: string | null;
+  department: string | null;
+  attendance_date: string;
+  correction_type: AttendanceCorrectionType;
+  proposed_timestamp: string;
+  original_event_id: number | null;
+  reason: string;
+  status: AttendanceCorrectionStatus;
+  requested_by_user_id: number;
+  requester_name: string | null;
+  requester_email: string | null;
+  reviewed_by_user_id: number | null;
+  reviewer_name: string | null;
+  reviewer_email: string | null;
+  review_notes: string | null;
+  reviewed_at: string | null;
+  idempotency_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AttendanceCorrectionListResponse {
+  items: AttendanceCorrectionResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AttendanceCorrectionFilterParams {
+  employee_id?: number;
+  date?: string;
+  status?: AttendanceCorrectionStatus | 'ALL';
+  limit?: number;
+  offset?: number;
 }
 
 export type AttendanceReviewStatus = 'NO_PUNCH' | 'NORMAL' | 'REQUIRES_REVIEW' | 'ACKNOWLEDGED';
@@ -165,6 +225,8 @@ export interface AttendanceReportItem {
   has_roaming: boolean;
   roaming_count: number;
   status: 'NORMAL' | 'REQUIRES_REVIEW' | 'NO_PUNCH' | string;
+  work_duration_minutes?: number | null;
+  work_duration_formatted?: string | null;
 }
 
 export interface AttendanceReportSummary {
@@ -176,6 +238,8 @@ export interface AttendanceReportSummary {
   roaming_punch_count: number;
   total_records: number;
   eligible_employee_count: number;
+  total_worked_hours?: number;
+  average_daily_worked_hours?: number | null;
 }
 
 export interface AttendanceReportResponse {
@@ -190,6 +254,7 @@ export interface AttendanceReportFilterParams {
   start_date?: string;
   end_date?: string;
   office_id?: number;
+  department?: string;
   employee_id?: number;
   limit?: number;
   offset?: number;

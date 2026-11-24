@@ -12,6 +12,15 @@ from app.schemas.leave import (
     LeaveRequestListResponse,
     LeaveRequestReview,
 )
+from app.schemas.leave_entitlement import (
+    EmployeeLeaveBalanceSummary,
+    EmployeeLeaveEntitlementCreate,
+    EmployeeLeaveEntitlementResponse,
+    LeaveBalanceLedgerResponse,
+    LeaveEntitlementDefaultCreate,
+    LeaveEntitlementDefaultResponse,
+)
+from app.services.leave_entitlement_service import LeaveEntitlementService
 from app.services.leave_service import LeaveService
 
 router = APIRouter(prefix="/api/v1/leaves", tags=["Leave Management"])
@@ -66,6 +75,127 @@ def list_leave_requests(
         end_date=end_date,
         limit=limit,
         offset=offset,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Leave Entitlements & Balances Endpoints (Must precede /{leave_id})
+# ---------------------------------------------------------------------------
+
+
+@router.get("/balances/{employee_id}", response_model=EmployeeLeaveBalanceSummary)
+def get_employee_leave_balances(
+    employee_id: int,
+    year: int | None = Query(default=None, description="Calendar year (defaults to current year)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve allocated, used, pending, and available balances for an employee in a calendar year."""
+    effective_year = year if year is not None else date.today().year
+    return LeaveEntitlementService.get_employee_balance_summary(
+        db=db,
+        current_user=current_user,
+        employee_id=employee_id,
+        year=effective_year,
+    )
+
+
+@router.get("/ledger/{employee_id}", response_model=list[LeaveBalanceLedgerResponse])
+def get_employee_balance_ledger(
+    employee_id: int,
+    year: int | None = Query(default=None, description="Calendar year (defaults to current year)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve transactional balance ledger history for an employee in a calendar year."""
+    effective_year = year if year is not None else date.today().year
+    return LeaveEntitlementService.get_ledger(
+        db=db,
+        current_user=current_user,
+        employee_id=employee_id,
+        year=effective_year,
+    )
+
+
+@router.get("/entitlements/defaults", response_model=list[LeaveEntitlementDefaultResponse])
+def get_entitlement_defaults(
+    year: int = Query(default_factory=lambda: date.today().year, description="Calendar year"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List organization-wide leave entitlement defaults for a calendar year."""
+    return LeaveEntitlementService.get_defaults(db=db, year=year)
+
+
+@router.post("/entitlements/defaults", response_model=LeaveEntitlementDefaultResponse, status_code=status.HTTP_200_OK)
+def set_entitlement_default(
+    payload: LeaveEntitlementDefaultCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Configure or update an organization-wide default leave entitlement. Admin only."""
+    return LeaveEntitlementService.set_default(
+        db=db,
+        current_user=current_user,
+        payload=payload,
+    )
+
+
+@router.delete("/entitlements/defaults/{default_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_entitlement_default(
+    default_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete an organization-wide leave entitlement default. Admin only."""
+    LeaveEntitlementService.delete_default(
+        db=db,
+        current_user=current_user,
+        default_id=default_id,
+    )
+
+
+@router.get("/entitlements/overrides", response_model=list[EmployeeLeaveEntitlementResponse])
+def list_entitlement_overrides(
+    year: int = Query(default_factory=lambda: date.today().year, description="Calendar year"),
+    employee_id: int | None = Query(default=None, description="Optional employee ID filter"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List employee-specific leave entitlement overrides."""
+    return LeaveEntitlementService.list_overrides(
+        db=db,
+        current_user=current_user,
+        year=year,
+        employee_id=employee_id,
+    )
+
+
+@router.post("/entitlements/overrides", response_model=EmployeeLeaveEntitlementResponse, status_code=status.HTTP_200_OK)
+def set_entitlement_override(
+    payload: EmployeeLeaveEntitlementCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Configure or update an employee-specific leave entitlement override. Admin only."""
+    return LeaveEntitlementService.set_override(
+        db=db,
+        current_user=current_user,
+        payload=payload,
+    )
+
+
+@router.delete("/entitlements/overrides/{override_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_entitlement_override(
+    override_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete an employee-specific leave entitlement override. Admin only."""
+    LeaveEntitlementService.delete_override(
+        db=db,
+        current_user=current_user,
+        override_id=override_id,
     )
 
 

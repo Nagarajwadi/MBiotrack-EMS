@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { getDevices } from '../api/deviceApi';
+import { getEmployees } from '../api/employeeApi';
 import type { User } from '../types/auth';
 import type { AttendancePunchCreatePayload } from '../types/attendance';
 import type { Device } from '../types/device';
+import type { Employee } from '../types/employee';
 import './components.css';
 
 export interface PunchModalProps {
@@ -11,6 +13,7 @@ export interface PunchModalProps {
   defaultPunchType?: 'CHECK_IN' | 'CHECK_OUT';
   targetEmployeeId?: number | null;
   targetEmployeeName?: string | null;
+  employees?: Employee[];
   isSubmitting?: boolean;
   serverError?: string | null;
   onClose: () => void;
@@ -23,6 +26,7 @@ export const PunchModal: React.FC<PunchModalProps> = ({
   defaultPunchType = 'CHECK_IN',
   targetEmployeeId,
   targetEmployeeName,
+  employees: propEmployees,
   isSubmitting = false,
   serverError = null,
   onClose,
@@ -40,7 +44,15 @@ export const PunchModal: React.FC<PunchModalProps> = ({
   const [devices, setDevices] = useState<Device[]>([]);
   const [isDevicesLoading, setIsDevicesLoading] = useState<boolean>(true);
   const [deviceLoadError, setDeviceLoadError] = useState<string | null>(null);
+
+  const [fetchedEmployees, setFetchedEmployees] = useState<Employee[]>([]);
+  const [isEmployeesLoading, setIsEmployeesLoading] = useState<boolean>(
+    Boolean(!propEmployees && !isEmployee && !targetEmployeeId)
+  );
+  const [employeeLoadError, setEmployeeLoadError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  const employees = propEmployees ?? fetchedEmployees;
 
   // Sync state when modal opens
   if (trackedOpen !== isOpen) {
@@ -51,6 +63,10 @@ export const PunchModal: React.FC<PunchModalProps> = ({
       setValidationError(null);
       setIsDevicesLoading(true);
       setDeviceLoadError(null);
+      if (!propEmployees && !isEmployee && !targetEmployeeId) {
+        setIsEmployeesLoading(true);
+        setEmployeeLoadError(null);
+      }
     }
   }
 
@@ -82,6 +98,29 @@ export const PunchModal: React.FC<PunchModalProps> = ({
     };
   }, [isOpen]);
 
+  // Fetch active employees when modal opens in manual punch mode (non-employee without pre-selected target)
+  useEffect(() => {
+    if (!isOpen || propEmployees || isEmployee || targetEmployeeId) return;
+
+    let isMounted = true;
+
+    getEmployees('ACTIVE')
+      .then((data) => {
+        if (!isMounted) return;
+        setFetchedEmployees(data);
+        setIsEmployeesLoading(false);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setEmployeeLoadError('Unable to load active employees.');
+        setIsEmployeesLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, propEmployees, isEmployee, targetEmployeeId]);
+
   // Handle escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -106,14 +145,18 @@ export const PunchModal: React.FC<PunchModalProps> = ({
     }
 
     let finalEmployeeId: number | undefined = undefined;
-    if (!isEmployee) {
+    if (targetEmployeeId) {
+      finalEmployeeId = targetEmployeeId;
+    } else if (isEmployee) {
+      if (currentUser.employee_id) {
+        finalEmployeeId = currentUser.employee_id;
+      }
+    } else {
       const parsedEmpId = parseInt(employeeIdInput.trim(), 10);
       if (employeeIdInput.trim() && !isNaN(parsedEmpId) && parsedEmpId > 0) {
         finalEmployeeId = parsedEmpId;
-      } else if (!targetEmployeeId && currentUser.employee_id) {
-        finalEmployeeId = currentUser.employee_id;
-      } else if (!targetEmployeeId) {
-        setValidationError('Please provide a valid Employee ID.');
+      } else {
+        setValidationError('Please select an active employee.');
         return;
       }
     }
@@ -123,13 +166,14 @@ export const PunchModal: React.FC<PunchModalProps> = ({
     const payload: AttendancePunchCreatePayload = {
       device_id: parsedDeviceId,
       punch_type: punchType,
-      idempotency_key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `punch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      idempotency_key:
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `punch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     };
 
     if (finalEmployeeId) {
       payload.employee_id = finalEmployeeId;
-    } else if (targetEmployeeId) {
-      payload.employee_id = targetEmployeeId;
     }
 
     onSubmit(payload);
@@ -208,23 +252,55 @@ export const PunchModal: React.FC<PunchModalProps> = ({
               </div>
             )}
 
-            {/* Non-employee target override */}
+            {/* Non-employee target selection dropdown */}
             {!isEmployee && !targetEmployeeId && (
               <div className="form-group">
                 <label htmlFor="punch-employee-id" className="field-label">
-                  Employee ID <span className="required-star">*</span>
+                  Target Employee <span className="required-star">*</span>
                 </label>
-                <input
-                  id="punch-employee-id"
-                  type="number"
-                  min="1"
-                  className="form-control"
-                  placeholder="e.g. 1"
-                  value={employeeIdInput}
-                  onChange={(e) => setEmployeeIdInput(e.target.value)}
-                  disabled={isSubmitting}
-                  required
-                />
+                {isEmployeesLoading ? (
+                  <div
+                    className="table-state-description"
+                    role="status"
+                    aria-label="Loading active employees"
+                  >
+                    Loading active employees...
+                  </div>
+                ) : employeeLoadError ? (
+                  <div className="alert-banner error" role="alert">
+                    <div className="alert-content">
+                      <span aria-hidden="true">⚠️</span>
+                      <span>{employeeLoadError}</span>
+                    </div>
+                  </div>
+                ) : employees.length === 0 ? (
+                  <div className="alert-banner error" role="alert">
+                    <div className="alert-content">
+                      <span aria-hidden="true">⚠️</span>
+                      <span>No active employees are available. Please add an employee first.</span>
+                    </div>
+                  </div>
+                ) : (
+                  <select
+                    id="punch-employee-id"
+                    className="form-control"
+                    value={employeeIdInput}
+                    onChange={(e) => {
+                      setEmployeeIdInput(e.target.value);
+                      if (validationError) setValidationError(null);
+                    }}
+                    disabled={isSubmitting}
+                    required
+                  >
+                    <option value="">Select an employee...</option>
+                    {employees.map((emp) => (
+                      <option key={emp.id} value={String(emp.id)}>
+                        {emp.first_name} {emp.last_name} ({emp.employee_code})
+                        {emp.department ? ` — ${emp.department}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
 
@@ -321,7 +397,14 @@ export const PunchModal: React.FC<PunchModalProps> = ({
             <button
               type="submit"
               className={`btn ${punchType === 'CHECK_IN' ? 'btn-primary' : 'btn-danger'}`}
-              disabled={isSubmitting || isDevicesLoading || devices.length === 0}
+              disabled={
+                isSubmitting ||
+                isDevicesLoading ||
+                devices.length === 0 ||
+                (!isEmployee &&
+                  !targetEmployeeId &&
+                  (isEmployeesLoading || employees.length === 0 || !employeeIdInput))
+              }
             >
               {isSubmitting
                 ? 'Recording Punch...'

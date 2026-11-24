@@ -54,7 +54,15 @@ interface FeedbackMessage {
 }
 
 function App() {
-  const { user, isAuthenticated, sessionEpoch, logout } = useAuth();
+  const {
+    user,
+    status: authStatus,
+    isAuthenticated,
+    sessionEpoch,
+    logout,
+    restorationError,
+    retryRestoration,
+  } = useAuth();
 
   // Primary application state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -551,7 +559,53 @@ function App() {
         onNavigate={setViewPreference}
       />
 
-      {!isAuthenticated ? (
+      {authStatus === 'restoring' ? (
+        <div className="login-card-container">
+          <div style={{ width: '100%', maxWidth: '440px' }}>
+            {restorationError ? (
+              <div className="table-state-container" style={{ padding: '2rem 1rem' }}>
+                <div
+                  className="alert-banner error"
+                  role="alert"
+                  aria-live="assertive"
+                  style={{ marginBottom: '1.5rem', textAlign: 'left' }}
+                >
+                  <div className="alert-content">
+                    <span>⚠️</span>
+                    <span>{restorationError}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+                  {retryRestoration && (
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => void retryRestoration()}
+                    >
+                      Retry Connection
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => void logout()}
+                  >
+                    Sign In Again
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="table-state-container" style={{ padding: '3rem 1rem' }}>
+                <div className="table-spinner" role="status" aria-label="Restoring session" />
+                <div className="table-state-title">Restoring Session</div>
+                <div className="table-state-description">
+                  Verifying your session with the server...
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : !isAuthenticated ? (
         <div className="login-card-container">
           <div style={{ width: '100%', maxWidth: '440px' }}>
             {feedback && (

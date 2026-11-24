@@ -82,6 +82,10 @@ class LeaveRequest(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    working_days: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -117,6 +121,10 @@ class LeaveRequest(Base):
         CheckConstraint(
             "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')",
             name="ck_leave_requests_status",
+        ),
+        CheckConstraint(
+            "working_days IS NULL OR working_days > 0",
+            name="ck_leave_requests_working_days_positive",
         ),
         Index("ix_leave_requests_dates", "start_date", "end_date"),
     )

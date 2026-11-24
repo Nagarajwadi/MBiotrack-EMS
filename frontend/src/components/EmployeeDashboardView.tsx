@@ -4,7 +4,7 @@ import {
   getDailyAttendanceOperations,
   recordAttendancePunch,
 } from '../api/attendanceApi';
-import { getLeaveRequests } from '../api/leaveApi';
+import { getEmployeeLeaveBalances, getLeaveRequests } from '../api/leaveApi';
 import { ApiError } from '../api/apiError';
 import type { User } from '../types/auth';
 import type {
@@ -13,8 +13,13 @@ import type {
   DailyPunchDetail,
   EmployeeDailyAttendanceItem,
 } from '../types/attendance';
-import type { LeaveRequestDetail, LeaveType } from '../types/leave';
+import type {
+  EmployeeLeaveBalanceSummary,
+  LeaveRequestDetail,
+  LeaveType,
+} from '../types/leave';
 import { PunchModal } from './PunchModal';
+import { LeaveBalanceLedgerModal } from './LeaveBalanceLedgerModal';
 import './components.css';
 
 export interface EmployeeDashboardViewProps {
@@ -33,17 +38,6 @@ const TODAY_FORMATTED_DATE = new Date().toLocaleDateString(undefined, {
   day: 'numeric',
   year: 'numeric',
 });
-
-function computeLeaveDuration(start: string, end: string): number {
-  try {
-    const d1 = new Date(start + 'T00:00:00Z');
-    const d2 = new Date(end + 'T00:00:00Z');
-    const diff = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    return diff > 0 ? diff : 1;
-  } catch {
-    return 1;
-  }
-}
 
 export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
   currentUser,
@@ -69,6 +63,8 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
 
   // Leaves Data
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequestDetail[]>([]);
+  const [balancesSummary, setBalancesSummary] = useState<EmployeeLeaveBalanceSummary | null>(null);
+  const [isLedgerModalOpen, setIsLedgerModalOpen] = useState<boolean>(false);
 
   // Punch modal state
   const [isPunchModalOpen, setIsPunchModalOpen] = useState<boolean>(false);
@@ -139,6 +135,17 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
 
         setRecentEvents(eventsRes.items || []);
         setLeaveRequests(leavesRes.items || []);
+
+        if (currentUser.employee_id && typeof getEmployeeLeaveBalances === 'function') {
+          getEmployeeLeaveBalances(currentUser.employee_id)
+            .then((balRes) => {
+              if (isMounted) setBalancesSummary(balRes);
+            })
+            .catch(() => {
+              // Non-critical fallback to computed usage
+            });
+        }
+
         setIsLoading(false);
       })
       .catch((err: unknown) => {
@@ -156,7 +163,7 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [reloadTrigger]);
+  }, [reloadTrigger, currentUser.employee_id]);
 
   const handleRefresh = useCallback(() => {
     setIsLoading(true);
@@ -225,10 +232,19 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
 
     for (const req of leaveRequests) {
       const type = (req.leave_type || '').toUpperCase();
-      const duration = computeLeaveDuration(req.start_date, req.end_date);
 
       if (req.status === 'PENDING') {
         pendingList.push(req);
+      }
+
+      // Exclude unknown legacy durations from working-day usage totals
+      if (req.working_days === null || req.working_days === undefined) {
+        continue;
+      }
+
+      const duration = req.working_days;
+
+      if (req.status === 'PENDING') {
         if (type in pendingDays) {
           pendingDays[type] += duration;
         }
@@ -244,14 +260,24 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
     }
 
     const usageItems = (['ANNUAL', 'SICK', 'CASUAL'] as LeaveType[]).map((type) => {
-      const used = usedDays[type] || 0;
-      const pending = pendingDays[type] || 0;
+      const liveBal = balancesSummary?.balances?.find((b) => b.leave_type === type);
+      const used = liveBal ? liveBal.used_days : (usedDays[type] || 0);
+      const pending = liveBal ? liveBal.pending_days : (pendingDays[type] || 0);
+      const allocated = liveBal?.allocated_days ?? null;
+      const available = liveBal?.available_days ?? null;
+      const isEnforced = liveBal?.is_enforced ?? false;
+      const isOverride = liveBal?.is_override ?? false;
+
       return {
         type,
         label: type === 'ANNUAL' ? 'Annual Leave' : type === 'SICK' ? 'Sick Leave' : 'Casual Leave',
         icon: type === 'ANNUAL' ? '🏖️' : type === 'SICK' ? '🤒' : '🌴',
         used,
         pending,
+        allocated,
+        available,
+        isEnforced,
+        isOverride,
       };
     });
 
@@ -262,7 +288,7 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
       totalApprovedDays:
         usedDays.ANNUAL + usedDays.SICK + usedDays.CASUAL + usedDays.UNPAID,
     };
-  }, [leaveRequests]);
+  }, [leaveRequests, balancesSummary]);
 
   // Handle punch submission from PunchModal
   const handlePunchSubmit = async (payload: AttendancePunchCreatePayload) => {
@@ -511,13 +537,43 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
                       {item.icon}
                     </div>
                     <div className="leave-details">
-                      <span className="leave-title">{item.label}</span>
+                      <span className="leave-title">
+                        {item.label}
+                        {item.isOverride && (
+                          <span
+                            style={{
+                              marginLeft: '6px',
+                              fontSize: '0.65rem',
+                              background: '#e0e7ff',
+                              color: '#4338ca',
+                              padding: '1px 5px',
+                              borderRadius: '4px',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Override
+                          </span>
+                        )}
+                      </span>
                       <div className="leave-available">
-                        <strong>{item.used}</strong>
-                        <span className="leave-total"> {item.used === 1 ? 'day approved' : 'days approved'}</span>
+                        {item.isEnforced && item.available !== null ? (
+                          <>
+                            <strong>{item.available}</strong>
+                            <span className="leave-total"> of {item.allocated}d available</span>
+                          </>
+                        ) : (
+                          <>
+                            <strong>{item.used}</strong>
+                            <span className="leave-total"> {item.used === 1 ? 'day approved' : 'days approved'}</span>
+                          </>
+                        )}
                       </div>
                       <div className="leave-stats-row">
-                        {item.pending > 0 ? (
+                        {item.isEnforced ? (
+                          <span>
+                            {item.used}d used · {item.pending}d pending
+                          </span>
+                        ) : item.pending > 0 ? (
                           <span className="leave-pending-stat">Pending: {item.pending}d</span>
                         ) : (
                           <span className="text-muted">0d pending</span>
@@ -528,7 +584,17 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
                 ))}
               </div>
 
-              <div className="dashboard-card-action">
+              <div className="dashboard-card-action" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {currentUser.employee_id && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setIsLedgerModalOpen(true)}
+                    data-testid="view-balance-history-btn"
+                  >
+                    📜 Balance History
+                  </button>
+                )}
                 {onNavigateToLeaves && (
                   <button
                     type="button"
@@ -657,10 +723,11 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
                               {req.start_date} to {req.end_date}
                             </div>
                             <small className="text-muted">
-                              {computeLeaveDuration(req.start_date, req.end_date)}{' '}
-                              {computeLeaveDuration(req.start_date, req.end_date) === 1
-                                ? 'day'
-                                : 'days'}
+                              {req.working_days !== null && req.working_days !== undefined
+                                ? (req.working_days === 1
+                                    ? '1 working day'
+                                    : `${req.working_days} working days`)
+                                : 'Legacy — duration unavailable'}
                             </small>
                           </td>
                           <td>
@@ -697,6 +764,15 @@ export const EmployeeDashboardView: React.FC<EmployeeDashboardViewProps> = ({
           setIsPunchModalOpen(false);
         }}
         onSubmit={handlePunchSubmit}
+      />
+
+      {/* Leave Balance History Modal */}
+      <LeaveBalanceLedgerModal
+        isOpen={isLedgerModalOpen}
+        employeeId={currentUser.employee_id ?? null}
+        employeeName={currentUser.full_name}
+        year={CURRENT_YEAR}
+        onClose={() => setIsLedgerModalOpen(false)}
       />
     </main>
   );

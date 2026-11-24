@@ -22,3 +22,7 @@ export { UserCreateModal, type UserCreateModalProps } from './UserCreateModal';
 export { UserManagementView, type UserManagementViewProps } from './UserManagementView';
 export { ChangePasswordModal, type ChangePasswordModalProps } from './ChangePasswordModal';
 export { ResetPasswordModal, type ResetPasswordModalProps } from './ResetPasswordModal';
+export { UserRoleModal, type UserRoleModalProps } from './UserRoleModal';
+export { AttendanceCorrectionModal, type AttendanceCorrectionModalProps } from './AttendanceCorrectionModal';
+export { LeaveEntitlementModal, type LeaveEntitlementModalProps } from './LeaveEntitlementModal';
+export { LeaveBalanceLedgerModal, type LeaveBalanceLedgerModalProps } from './LeaveBalanceLedgerModal';

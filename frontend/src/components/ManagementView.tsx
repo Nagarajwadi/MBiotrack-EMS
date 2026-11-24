@@ -279,6 +279,13 @@ export const ManagementView: React.FC<ManagementViewProps> = ({
     setIsDeviceModalOpen(true);
   };
 
+  const handleCloseDeviceModal = () => {
+    setIsDeviceModalOpen(false);
+    setSelectedDevice(null);
+    setDeviceModalMode('create');
+    setDeviceServerError(null);
+  };
+
   const handleDeviceSubmit = async (payload: DeviceCreatePayload | DeviceUpdatePayload) => {
     setIsDeviceSubmitting(true);
     setDeviceServerError(null);
@@ -292,7 +299,7 @@ export const ManagementView: React.FC<ManagementViewProps> = ({
         setDevices((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
         setFeedback({ type: 'success', message: `Device "${updated.name}" updated successfully.` });
       }
-      setIsDeviceModalOpen(false);
+      handleCloseDeviceModal();
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.message : 'Failed to save device terminal.';
       setDeviceServerError(msg);
@@ -1019,15 +1026,16 @@ export const ManagementView: React.FC<ManagementViewProps> = ({
         />
       )}
 
-      {canManageDevices(currentUser.role) && (
+      {canManageDevices(currentUser.role) && isDeviceModalOpen && (
         <DeviceModal
+          key={selectedDevice ? `edit-device-${selectedDevice.id}` : 'create-device'}
           isOpen={isDeviceModalOpen}
           mode={deviceModalMode}
           offices={offices}
           initialData={selectedDevice}
           isSubmitting={isDeviceSubmitting}
           serverError={deviceServerError}
-          onClose={() => setIsDeviceModalOpen(false)}
+          onClose={handleCloseDeviceModal}
           onSubmit={handleDeviceSubmit}
         />
       )}
